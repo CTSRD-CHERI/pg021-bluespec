@@ -6,8 +6,8 @@ import Vector :: *;
 
 // AXI imports
 import AXI :: *;
-import AXI4_Stream_Types :: *;
-import AXI4S_Utils :: *;
+import AXI4Stream_Types :: *;
+import AXI4Stream_Utils :: *;
 import Connectable :: *;
 import SourceSink :: *;
 
@@ -57,12 +57,12 @@ interface AXI4_DMA_IFC #(numeric type mid_,  // master id
                            aruser_, ruser_) axi_copy_master;
 
    // AXI4 Stream masters for writing data and metadata
-   interface AXI4S_Master #(strm_id_, sdata_, sdest_, suser_) axi4s_data_master;
-   interface AXI4S_Master #(strm_id_, sdata_, sdest_, suser_) axi4s_meta_master;
+   interface AXI4Stream_Master #(strm_id_, sdata_, sdest_, suser_) axi4s_data_master;
+   interface AXI4Stream_Master #(strm_id_, sdata_, sdest_, suser_) axi4s_meta_master;
 
    // AXI4 Stream slaves for receiving data and metadata
-   interface AXI4S_Slave #(strm_id_, sdata_, sdest_, suser_) axi4s_data_slave;
-   interface AXI4S_Slave #(strm_id_, sdata_, sdest_, suser_) axi4s_meta_slave;
+   interface AXI4Stream_Slave #(strm_id_, sdata_, sdest_, suser_) axi4s_data_slave;
+   interface AXI4Stream_Slave #(strm_id_, sdata_, sdest_, suser_) axi4s_meta_slave;
 
    method Action set_verbosity (Bit #(4) new_verb);
    method Action reset;

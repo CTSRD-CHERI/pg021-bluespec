@@ -5,29 +5,29 @@ import FIFOF :: *;
 
 // AXI imports
 import AXI :: *;
-import AXI4_Stream_Types :: *;
-import AXI4S_Utils :: *;
+import AXI4Stream_Types :: *;
+import AXI4Stream_Utils :: *;
 import SourceSink :: *;
 
-interface AXI4S_Data_Source #(numeric type strm_id_
+interface AXI4Stream_Data_Source #(numeric type strm_id_
                              ,numeric type sdata_
                              ,numeric type sdest_
                              ,numeric type suser_);
-   interface AXI4S_Master #(strm_id_, sdata_, sdest_, suser_) axi4s_master;
+   interface AXI4Stream_Master #(strm_id_, sdata_, sdest_, suser_) axi4s_master;
    method Action set_verbosity (Bit #(4) new_verb);
 endinterface
-module mkAXI4S_Data_Source (AXI4S_Data_Source #(strm_id_, sdata_, sdest_, suser_))
+module mkAXI4Stream_Data_Source (AXI4Stream_Data_Source #(strm_id_, sdata_, sdest_, suser_))
             provisos ( Add#(a__, 4, TDiv#(sdata_, 8))
                      , Add#(b__, 32, sdata_)
                      );
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
-   AXI4S_Shim #(strm_id_, sdata_, sdest_, suser_) shim <- mkAXI4SShimFF1;
+   AXI4Stream_Shim #(strm_id_, sdata_, sdest_, suser_) shim <- mkAXI4StreamShimFF1;
    Reg #(Bit #(32)) rg_counter <- mkReg (0);
    Reg #(Bit #(32)) rg_tx_count <- mkReg (0);
    Reg #(Bit #(32)) rg_tx_count_max <- mkReg (3);
    Reg #(Bool) rg_txfer_started <- mkReg (False);
    Reg #(Bool) rg_txfer_end_trigger <- mkReg (False);
-   AXI4S_TFlit #(strm_id_, sdata_, sdest_, suser_) base_tflit = AXI4S_TFlit {
+   AXI4Stream_Flit #(strm_id_, sdata_, sdest_, suser_) base_flit = AXI4Stream_Flit {
       tdata: zeroExtend (32'hcafecafe),
       tstrb: zeroExtend (4'hf),
       tkeep: zeroExtend (4'hf),
@@ -43,7 +43,7 @@ module mkAXI4S_Data_Source (AXI4S_Data_Source #(strm_id_, sdata_, sdest_, suser_
       $display ("   rg_tx_count_max: ", fshow (rg_tx_count_max));
       $display ("   rg_txfer_started: ", fshow (rg_txfer_started));
       $display ("   rg_txfer_end_trigger: ", fshow (rg_txfer_end_trigger));
-      $display ("   shim.slave.t.canPut: ", fshow (shim.slave.t.canPut));
+      $display ("   shim.slave.canPut: ", fshow (shim.slave.canPut));
    endrule
    rule rl_incr_counter;
       rg_counter <= rg_counter + 1;
@@ -60,7 +60,7 @@ module mkAXI4S_Data_Source (AXI4S_Data_Source #(strm_id_, sdata_, sdest_, suser_
             $display ("DMA S2MM transfer continuing");
          end
       end
-      shim.slave.t.put (base_tflit);
+      shim.slave.put (base_flit);
       rg_txfer_started <= True;
       rg_tx_count <= rg_tx_count + 1;
    endrule
@@ -73,9 +73,9 @@ module mkAXI4S_Data_Source (AXI4S_Data_Source #(strm_id_, sdata_, sdest_, suser_
       if (rg_verbosity > 0) begin
          $display ("DMA S2MM transfer ended");
       end
-      let last_tflit = base_tflit;
-      last_tflit.tlast = True;
-      shim.slave.t.put (last_tflit);
+      let last_flit = base_flit;
+      last_flit.tlast = True;
+      shim.slave.put (last_flit);
       rg_txfer_started <= False;
       rg_txfer_end_trigger <= False;
       rg_tx_count <= 0;
@@ -92,10 +92,10 @@ interface AXI4_Stream_Delay_Loopback_IFC #(numeric type strm_id_,
                                            numeric type sdata_,
                                            numeric type sdest_,
                                            numeric type suser_);
-   interface AXI4S_Master #(strm_id_, sdata_, sdest_, suser_) axi4s_data_master;
-   interface AXI4S_Master #(strm_id_, sdata_, sdest_, suser_) axi4s_meta_master;
-   interface AXI4S_Slave #(strm_id_, sdata_, sdest_, suser_) axi4s_data_slave;
-   interface AXI4S_Slave #(strm_id_, sdata_, sdest_, suser_) axi4s_meta_slave;
+   interface AXI4Stream_Master #(strm_id_, sdata_, sdest_, suser_) axi4s_data_master;
+   interface AXI4Stream_Master #(strm_id_, sdata_, sdest_, suser_) axi4s_meta_master;
+   interface AXI4Stream_Slave #(strm_id_, sdata_, sdest_, suser_) axi4s_data_slave;
+   interface AXI4Stream_Slave #(strm_id_, sdata_, sdest_, suser_) axi4s_meta_slave;
    method Action set_verbosity (Bit #(4) new_verb);
 endinterface
 module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, sdata_, sdest_, suser_));
@@ -110,10 +110,10 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
    Reg #(Bit #(32)) rg_tick_counter <- mkReg (0);
    Reg #(Bit #(32)) rg_txfer_counter <- mkReg (0);
    Reg #(Bit #(3)) rg_meta_counter <- mkReg (0);
-   AXI4S_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_m_data_shim <- mkAXI4SShimFF1;
-   AXI4S_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_m_meta_shim <- mkAXI4SShimFF1;
-   AXI4S_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_s_data_shim <- mkAXI4SShimFF1;
-   AXI4S_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_s_meta_shim <- mkAXI4SShimFF1;
+   AXI4Stream_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_m_data_shim <- mkAXI4StreamShimFF1;
+   AXI4Stream_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_m_meta_shim <- mkAXI4StreamShimFF1;
+   AXI4Stream_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_s_data_shim <- mkAXI4StreamShimFF1;
+   AXI4Stream_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_s_meta_shim <- mkAXI4StreamShimFF1;
    rule rl_debug (rg_verbosity > 2);
       $display ("AXI DMA Stream Delay Loopback rl_debug");
       $display ("    rg_input_started: ", fshow (rg_input_started));
@@ -121,12 +121,12 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
       $display ("    rg_output_trigger: ", fshow (rg_output_trigger));
       $display ("    rg_meta_input_started: ", fshow (rg_meta_input_started));
       $display ("    rg_meta_output_started: ", fshow (rg_meta_output_started));
-      $display ("    axi4s_s_meta_shim.slave.t.canPut: ", fshow (axi4s_s_meta_shim.slave.t.canPut));
+      $display ("    axi4s_s_meta_shim.slave.canPut: ", fshow (axi4s_s_meta_shim.slave.canPut));
       $display ("    data_fifo.notEmpty: ", fshow (data_fifo.notEmpty));
       $display ("    meta_fifo.notEmpty: ", fshow (data_fifo.notEmpty));
    endrule
-   rule rl_get_input_meta (axi4s_m_meta_shim.master.t.canPeek);
-      axi4s_m_meta_shim.master.t.drop;
+   rule rl_get_input_meta (axi4s_m_meta_shim.master.canPeek);
+      axi4s_m_meta_shim.master.drop;
       if (!rg_meta_input_started) begin
          if (rg_verbosity > 0) begin
             $display ("AXI4 Stream Delay Loopback started receiving metadata");
@@ -134,12 +134,12 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
          rg_meta_input_started <= True;
       end
       if (rg_verbosity > 0) begin
-         $display ("AXI4 Stream Delay Loopback metadata: ", fshow (axi4s_m_meta_shim.master.t.peek.tdata));
+         $display ("AXI4 Stream Delay Loopback metadata: ", fshow (axi4s_m_meta_shim.master.peek.tdata));
       end
-      meta_fifo.enq (axi4s_m_meta_shim.master.t.peek.tdata);
+      meta_fifo.enq (axi4s_m_meta_shim.master.peek.tdata);
       rg_meta_counter <= rg_meta_counter + 1;
    endrule
-   rule rl_get_input_data (axi4s_m_data_shim.master.t.canPeek
+   rule rl_get_input_data (axi4s_m_data_shim.master.canPeek
                            && !rg_input_finished);
       if (!rg_input_started) begin
          if (rg_verbosity > 0) begin
@@ -147,9 +147,9 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
          end
          rg_input_started <= True;
       end
-      data_fifo.enq (axi4s_m_data_shim.master.t.peek.tdata);
-      axi4s_m_data_shim.master.t.drop;
-      if (axi4s_m_data_shim.master.t.peek.tlast) begin
+      data_fifo.enq (axi4s_m_data_shim.master.peek.tdata);
+      axi4s_m_data_shim.master.drop;
+      if (axi4s_m_data_shim.master.peek.tlast) begin
          rg_input_finished <= True;
          if (rg_verbosity > 0) begin
             $display ("AXI4 Stream Delay Loopback finished receiving");
@@ -171,7 +171,7 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
    rule rl_push_output_meta (rg_input_started
                              && rg_input_finished
                              && rg_output_trigger
-                             && axi4s_s_meta_shim.slave.t.canPut
+                             && axi4s_s_meta_shim.slave.canPut
                              && meta_fifo.notEmpty);
       if (!rg_meta_output_started) begin
          if (rg_verbosity > 0) begin
@@ -180,7 +180,7 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
          rg_meta_output_started <= True;
       end
 
-      AXI4S_TFlit #(strm_id_, sdata_, sdest_, suser_) tflit = AXI4S_TFlit {
+      AXI4Stream_Flit #(strm_id_, sdata_, sdest_, suser_) flit = AXI4Stream_Flit {
          tdata: meta_fifo.first,
          tstrb: ~0,
          tkeep: ~0,
@@ -192,7 +192,7 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
       if (rg_meta_counter == 1) begin
          $display ("AXI4 Stream Delay Loopback finished sending metadata");
       end
-      axi4s_s_meta_shim.slave.t.put (tflit);
+      axi4s_s_meta_shim.slave.put (flit);
       rg_meta_counter <= rg_meta_counter - 1;
       meta_fifo.deq;
    endrule
@@ -200,10 +200,10 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
                              && rg_input_finished
                              && rg_output_trigger
                              && !meta_fifo.notEmpty
-                             && axi4s_s_data_shim.slave.t.canPut
+                             && axi4s_s_data_shim.slave.canPut
                              && data_fifo.notEmpty);
       data_fifo.deq;
-      AXI4S_TFlit #(strm_id_, sdata_, sdest_, suser_) tflit = AXI4S_TFlit {
+      AXI4Stream_Flit #(strm_id_, sdata_, sdest_, suser_) flit = AXI4Stream_Flit {
          tdata: data_fifo.first,
          tstrb: ~0,
          tkeep: ~0,
@@ -212,7 +212,7 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
          tdest: 0,
          tuser: 0
       };
-      axi4s_s_data_shim.slave.t.put (tflit);
+      axi4s_s_data_shim.slave.put (flit);
       rg_txfer_counter <= rg_txfer_counter - 1;
       if (rg_txfer_counter == 1) begin
          if (rg_verbosity > 0) begin

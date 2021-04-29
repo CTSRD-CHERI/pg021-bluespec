@@ -8,8 +8,8 @@ import FIFOLevel :: *;
 
 // AXI imports
 import AXI :: *;
-import AXI4_Stream_Types :: *;
-import AXI4S_Utils :: *;
+import AXI4Stream_Types :: *;
+import AXI4Stream_Utils :: *;
 import SourceSink :: *;
 
 // Local imports
@@ -34,11 +34,11 @@ interface AXI4_DMA_Copy_Unit_IFC #(numeric type id_
                            awuser_, wuser_, buser_,
                            aruser_, ruser_) axi4_master;
 
-   interface AXI4S_Master #(sid_, sdata_, sdest_, suser_) axi4s_data_master;
-   interface AXI4S_Master #(sid_, sdata_, sdest_, suser_) axi4s_meta_master;
+   interface AXI4Stream_Master #(sid_, sdata_, sdest_, suser_) axi4s_data_master;
+   interface AXI4Stream_Master #(sid_, sdata_, sdest_, suser_) axi4s_meta_master;
 
-   interface AXI4S_Slave #(sid_, sdata_, sdest_, suser_) axi4s_data_slave;
-   interface AXI4S_Slave #(sid_, sdata_, sdest_, suser_) axi4s_meta_slave;
+   interface AXI4Stream_Slave #(sid_, sdata_, sdest_, suser_) axi4s_data_slave;
+   interface AXI4Stream_Slave #(sid_, sdata_, sdest_, suser_) axi4s_meta_slave;
 
    method Action trigger;
 
@@ -93,24 +93,24 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    // AXI 4 Stream slave shim
    // We are the master of this slave, and we write flits into it
    // This is the shim through which the actual data passes
-   AXI4S_Shim #(sid_, sdata_, sdest_, suser_) axi4s_s_data_shim <- mkAXI4SShimFF1;
+   AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_s_data_shim <- mkAXI4StreamShimFF1;
 
    // This is the shim through which metadata passes
    // Used to communicate with the ethernet block
    // For the ethernet block, the metadata is transferred first, and then the actual
    // data is transferred
-   AXI4S_Shim #(sid_, sdata_, sdest_, suser_) axi4s_s_meta_shim <- mkAXI4SShimFF1;
+   AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_s_meta_shim <- mkAXI4StreamShimFF1;
 
    // AXI 4 Stream master shims
    // We are the slave of this master, and we read flits from it
    // This is the shim through which the actual data passes
-   AXI4S_Shim #(sid_, sdata_, sdest_, suser_) axi4s_m_data_shim <- mkAXI4SShimFF1;
+   AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_m_data_shim <- mkAXI4StreamShimFF1;
 
    // This is the shim through which metadata passes
    // Used to communicate with the ethernet block
    // For the ethernet block, the metadata is transferred first, and then the actual
    // data is transferred
-   AXI4S_Shim #(sid_, sdata_, sdest_, suser_) axi4s_m_meta_shim <- mkAXI4SShimFF1;
+   AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_m_meta_shim <- mkAXI4StreamShimFF1;
 
    Reg #(DMA_Dir) crg_dir[2] <- mkCReg (2, MM2S);
    Reg #(State) rg_state <- mkReg (HALTED);
@@ -274,24 +274,24 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    // we can write to it
    rule rl_s2mm_metadata_transfer_start (rg_state == IDLE
                                          && dma_int_reg.s2mm_dmasr.halted == 1'b0
-                                         && axi4s_m_meta_shim.master.t.canPeek);
+                                         && axi4s_m_meta_shim.master.canPeek);
       if (rg_verbosity > 0) begin
          $display ("AXI4 DMA Copy Unit receiving S2MM metadata");
       end
-      if (truncate (axi4s_m_meta_shim.master.t.peek.tstrb) != 4'hf) begin
+      if (truncate (axi4s_m_meta_shim.master.peek.tstrb) != 4'hf) begin
          $display ("AXI4 DMA Copy Unit: Error: Received non-full word from ethernet");
       end
-      if (axi4s_m_meta_shim.master.t.peek.tlast) begin
+      if (axi4s_m_meta_shim.master.peek.tlast) begin
          $display ("AXI4 DMA Copy Unit: Error: First word from ethernet was also last");
       end
-      if (truncate (axi4s_m_meta_shim.master.t.peek.tkeep) != 4'hf) begin
+      if (truncate (axi4s_m_meta_shim.master.peek.tkeep) != 4'hf) begin
          $display ("AXI4 DMA Copy Unit: Error: Received null byte from ethernet");
       end
-      if (axi4s_m_meta_shim.master.t.peek.tdata[31:28] != 'h5) begin
+      if (axi4s_m_meta_shim.master.peek.tdata[31:28] != 'h5) begin
          $display ("AXI4 DMA Copy Unit: Error: Received wrong transfer type from ethernet");
       end
 
-      axi4s_m_meta_shim.master.t.drop;
+      axi4s_m_meta_shim.master.drop;
       rg_state <= META_RECEIVE_S2MM;
       // start the counter at zero for code clarity (we can just add the counter to
       // the address of _APP0 to get which word we are changing now)
@@ -301,11 +301,11 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    // Receive the rest of the metadata for this ethernet frame, and
    // update the Buffer Descriptor application fields accordingly
    rule rl_s2mm_metadata_receive (rg_state == META_RECEIVE_S2MM
-                                  && axi4s_m_meta_shim.master.t.canPeek);
-      axi4s_m_meta_shim.master.t.drop;
+                                  && axi4s_m_meta_shim.master.canPeek);
+      axi4s_m_meta_shim.master.drop;
 
       v_v_rg_bd[pack (S2MM)][pack (DMA_APP0) + zeroExtend (rg_meta_counter)]
-         <= truncate (axi4s_m_meta_shim.master.t.peek.tdata);
+         <= truncate (axi4s_m_meta_shim.master.peek.tdata);
 
       // We start the counter at zero for clarity above, which means that
       // it is actually one lower than the real number of words received.
@@ -323,7 +323,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
          // possible DMA transfer
          v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)] <= v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)]
                                                     | {1'b1, 3'b0, 1'b1, 1'b1, 26'b0};
-         if (!axi4s_m_meta_shim.master.t.peek.tlast) begin
+         if (!axi4s_m_meta_shim.master.peek.tlast) begin
             $display ("AXI4 DMA Copy Unit: Error: Received more than 6 metadata words");
          end
       end
@@ -340,7 +340,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    // AWFlit should be, so we don't yet send out an AWFlit
    rule rl_s2mm_data_transfer_start (rg_state == META_RECEIVE_S2MM
                                 && rg_meta_counter == 5
-                                && axi4s_m_data_shim.master.t.canPeek);
+                                && axi4s_m_data_shim.master.canPeek);
       if (rg_verbosity > 0) begin
          $display ("AXI4 DMA Copy Unit starting S2MM transfer");
       end
@@ -358,28 +358,28 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    // have tkeep = 'hf and tstrb = 'hf
    rule rl_s2mm_deq_from_stream (rg_state == COPYING
                                  && crg_dir[0] == S2MM
-                                 && axi4s_m_data_shim.master.t.canPeek
+                                 && axi4s_m_data_shim.master.canPeek
                                  && fifo_data.notFull);
       if (rg_verbosity > 0) begin
          $display ("AXI4 DMA Copy Unit dequeueing data from stream");
       end
       if (rg_verbosity > 1) begin
-         $display ("    data: ", fshow (axi4s_m_data_shim.master.t.peek.tdata));
+         $display ("    data: ", fshow (axi4s_m_data_shim.master.peek.tdata));
       end
       // handle transferring the data
-      axi4s_m_data_shim.master.t.drop;
+      axi4s_m_data_shim.master.drop;
       // TODO not sure if this should be done with tkeep or tstrb
-      let tkeep = axi4s_m_data_shim.master.t.peek.tkeep;
+      let tkeep = axi4s_m_data_shim.master.peek.tkeep;
       let mask = { tkeep[3] == 1 ? 8'hff : 8'h0
                  , tkeep[2] == 1 ? 8'hff : 8'h0
                  , tkeep[1] == 1 ? 8'hff : 8'h0
                  , tkeep[0] == 1 ? 8'hff : 8'h0};
-      fifo_data.enq (axi4s_m_data_shim.master.t.peek.tdata & mask);
+      fifo_data.enq (axi4s_m_data_shim.master.peek.tdata & mask);
       // TODO this assumes 32bit transfers
       rg_buf_len <= rg_buf_len + 4;
 
       // handle the last flit
-      if (axi4s_m_data_shim.master.t.peek.tlast) begin
+      if (axi4s_m_data_shim.master.peek.tlast) begin
          // This is the last flit of data
          rg_state <= WAIT_FOR_FINAL_DEQ;
          if (rg_buf_len + 4 != zeroExtend (v_v_rg_bd[pack (S2MM)][pack (DMA_APP4)][15:0])) begin
@@ -530,7 +530,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
 
    // Start off with transferring metadata on the metadata stream
    rule rl_mm2s_meta_transfer (rg_state == META_SEND_MM2S);
-      AXI4S_TFlit #(sid_, sdata_, sdest_, suser_) tflit = AXI4S_TFlit {
+      AXI4Stream_Flit #(sid_, sdata_, sdest_, suser_) flit = AXI4Stream_Flit {
          tdata: zeroExtend (v_v_rg_bd[pack (MM2S)][pack (DMA_APP0) + zeroExtend (rg_meta_counter)]),
          tstrb: ~0,
          tkeep: ~0,
@@ -539,7 +539,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
          tdest: 0,
          tuser: 0
       };
-      axi4s_s_meta_shim.slave.t.put (tflit);
+      axi4s_s_meta_shim.slave.put (flit);
 
       // We start this counter at 0 when we send the first byte in order
       // to clarify when selecting which APP word we are writing, so when
@@ -565,7 +565,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
                        : diff == 2 ? 4'h3
                        : diff == 1 ? 4'h1
                        :             4'h0;
-      AXI4S_TFlit #(sid_, sdata_, sdest_, suser_) tflit = AXI4S_TFlit {
+      AXI4Stream_Flit #(sid_, sdata_, sdest_, suser_) flit = AXI4Stream_Flit {
          tdata: zeroExtend (fifo_data.first),
          tstrb: active_bytes,
          tkeep: active_bytes,
@@ -577,7 +577,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
       if (active_bytes == 4'h0) begin
          $display ("AXI Copy Unit: ERROR: writing flit to stream with no active bytes");
       end
-      axi4s_s_data_shim.slave.t.put (tflit);
+      axi4s_s_data_shim.slave.put (flit);
       rg_stream_out_count <= rg_stream_out_count + 4;
       if (rg_stream_out_count + 4 >= rg_buf_len) begin
          $display ("DMA Copy Unit: finished stream transfer, going to IDLE");
@@ -592,7 +592,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
       end
       if (rg_verbosity > 1) begin
          $display ("DMA Copy Unit: enqueuing flit to stream");
-         $display ("    flit: ", fshow (tflit));
+         $display ("    flit: ", fshow (flit));
       end
    endrule
 
@@ -737,7 +737,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
       $display ("   fifo_data.notFull: ", fshow (fifo_data.notFull));
       $display ("   fifo_data.notEmpty: ", fshow (fifo_data.notEmpty));
       $display ("   fifo_data.count: ", fshow (fifo_data.count));
-      $display ("   axi4s_m_data_shim.master.t.canPeek: ", fshow (axi4s_m_data_shim.master.t.canPeek));
+      $display ("   axi4s_m_data_shim.master.canPeek: ", fshow (axi4s_m_data_shim.master.canPeek));
       $display ("   rg_buf_len: ", fshow (rg_buf_len));
       $display ("   rg_buf_cur: ", fshow (rg_buf_cur));
    endrule
@@ -790,7 +790,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
       Bit #(32) flag_b32 = {4'ha, ?};
       // Start sending the stream metadata immediately
       // The first flit just contains the flag and nothing else
-      AXI4S_TFlit #(sid_, sdata_, sdest_, suser_) tflit = AXI4S_TFlit {
+      AXI4Stream_Flit #(sid_, sdata_, sdest_, suser_) flit = AXI4Stream_Flit {
          tdata: zeroExtend (flag_b32),
          tstrb: ~0,
          tkeep: ~0,
@@ -799,7 +799,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
          tdest: 0,
          tuser: 0
       };
-      axi4s_s_meta_shim.slave.t.put (tflit);
+      axi4s_s_meta_shim.slave.put (flit);
    endmethod
 
    method Maybe #(DMA_Dir) end_trigger = rw_end_trigger.wget;
