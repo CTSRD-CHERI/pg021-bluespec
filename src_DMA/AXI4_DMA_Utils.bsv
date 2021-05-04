@@ -97,6 +97,7 @@ interface AXI4_Stream_Delay_Loopback_IFC #(numeric type strm_id_,
    interface AXI4Stream_Slave #(strm_id_, sdata_, sdest_, suser_) axi4s_data_slave;
    interface AXI4Stream_Slave #(strm_id_, sdata_, sdest_, suser_) axi4s_meta_slave;
    method Action set_verbosity (Bit #(4) new_verb);
+   method Action reset;
 endinterface
 module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, sdata_, sdest_, suser_));
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
@@ -234,6 +235,13 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
 
    method Action set_verbosity (Bit #(4) new_verb);
       rg_verbosity <= new_verb;
+   endmethod
+
+   method Action reset;
+      axi4s_m_meta_shim.clear;
+      axi4s_m_data_shim.clear;
+      axi4s_s_meta_shim.clear;
+      axi4s_s_data_shim.clear;
    endmethod
 endmodule
 

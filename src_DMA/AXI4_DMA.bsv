@@ -419,6 +419,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
 
    method Action reset;
       fa_reset;
+      axi4s_loopback.reset;
    endmethod
 
 endmodule
