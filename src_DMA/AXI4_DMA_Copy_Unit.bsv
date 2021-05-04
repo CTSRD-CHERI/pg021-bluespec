@@ -789,7 +789,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
       rg_state <= META_SEND_MM2S;
 
       rg_meta_counter <= 0;
-      Bit #(32) flag_b32 = {4'ha, ?};
+      Bit #(32) flag_b32 = {4'ha, 0};
       // Start sending the stream metadata immediately
       // The first flit just contains the flag and nothing else
       AXI4Stream_Flit #(sid_, sdata_, sdest_, suser_) flit = AXI4Stream_Flit {
