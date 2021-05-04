@@ -134,7 +134,7 @@ module mkAXI4_DMA_Scatter_Gather
 
    AXI4_Shim #(id_, addr_, data_,
                awuser_, wuser_, buser_,
-               aruser_, ruser_) shim <- mkAXI4ShimFF1;
+               aruser_, ruser_) shim <- mkAXI4ShimFF;
 
    Bit #(id_) base_id = 0;
 

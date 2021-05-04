@@ -59,7 +59,7 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
 
    AXI4_Shim #(id_, addr_, data_,
                awuser_, wuser_, buser_,
-               aruser_, ruser_) shim <- mkAXI4ShimFF1;
+               aruser_, ruser_) shim <- mkAXI4ShimFF;
    AXI4_Master #(id_, addr_, data_,
                  awuser_, wuser_, buser_,
                  aruser_, ruser_) serialiser <- mkSerialiser (shim.master);
