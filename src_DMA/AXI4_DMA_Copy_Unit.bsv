@@ -88,29 +88,29 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
 
    AXI4_Shim #(id_, addr_, data_,
                awuser_, wuser_, buser_,
-               aruser_, ruser_) shim <- mkAXI4ShimFF1;
+               aruser_, ruser_) shim <- mkAXI4ShimFF;
 
    // AXI 4 Stream slave shim
    // We are the master of this slave, and we write flits into it
    // This is the shim through which the actual data passes
-   AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_s_data_shim <- mkAXI4StreamShimFF1;
+   AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_s_data_shim <- mkAXI4StreamShimFF;
 
    // This is the shim through which metadata passes
    // Used to communicate with the ethernet block
    // For the ethernet block, the metadata is transferred first, and then the actual
    // data is transferred
-   AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_s_meta_shim <- mkAXI4StreamShimFF1;
+   AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_s_meta_shim <- mkAXI4StreamShimFF;
 
    // AXI 4 Stream master shims
    // We are the slave of this master, and we read flits from it
    // This is the shim through which the actual data passes
-   AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_m_data_shim <- mkAXI4StreamShimFF1;
+   AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_m_data_shim <- mkAXI4StreamShimFF;
 
    // This is the shim through which metadata passes
    // Used to communicate with the ethernet block
    // For the ethernet block, the metadata is transferred first, and then the actual
    // data is transferred
-   AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_m_meta_shim <- mkAXI4StreamShimFF1;
+   AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_m_meta_shim <- mkAXI4StreamShimFF;
 
    Reg #(DMA_Dir) crg_dir[2] <- mkCReg (2, MM2S);
    Reg #(State) rg_state <- mkReg (HALTED);
@@ -581,6 +581,27 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
       end
       axi4s_s_data_shim.slave.put (flit);
       rg_stream_out_count <= rg_stream_out_count + 4;
+
+      if (rg_verbosity > 1) begin
+         $display ("DMA Copy Unit: enqueuing flit to stream");
+         $display ("    flit: ", fshow (flit));
+      end
+      if (rg_verbosity > 0 && rg_stream_out_count + 4 >= rg_buf_len) begin
+         $display ("DMA Copy Unit: sent last stream flit");
+      end
+   endrule
+
+   // handle updating the state back to idle after all data has been
+   // transferred out to the stream interface
+   // This has been split off from the rule above to avoid a scheduling
+   // conflict between that rule and rl_handle_read_rsp, caused by both
+   // rules writing rg_state.
+   // Even after adding a condition that prevented both rules from
+   // writing rg_state in the same cycle (ie checking that the state
+   // in the rule above was WAIT_FOR_FINAL_DEQ) and with aggressive
+   // conditions the conflict was still present
+   rule rl_mm2s_update_state (rg_state == WAIT_FOR_FINAL_DEQ
+                              && crg_dir[0] == MM2S);
       if (rg_stream_out_count + 4 >= rg_buf_len) begin
          $display ("DMA Copy Unit: finished stream transfer, going to IDLE");
          // Set BD status complete and transferred bytes fields
@@ -588,13 +609,6 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
 
          rg_state <= IDLE;
          rw_end_trigger.wset (MM2S);
-         if (rg_verbosity > 0 && rg_stream_out_count + 4 >= rg_buf_len) begin
-            $display ("DMA Copy Unit: sent last stream flit");
-         end
-      end
-      if (rg_verbosity > 1) begin
-         $display ("DMA Copy Unit: enqueuing flit to stream");
-         $display ("    flit: ", fshow (flit));
       end
    endrule
 
@@ -694,7 +708,6 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    rule rl_handle_read_rsp (rg_state == COPYING
                            && crg_dir[0] == MM2S
                            && shim.slave.r.canPeek
-                           && fifo_data.notFull
                            );
       shim.slave.r.drop;
       let rflit = shim.slave.r.peek;
@@ -764,6 +777,49 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
                                        || rg_state == RESET
                                        || !rg_bresp_required));
       $display ("DMA Copy Unit: ERROR: got bresp in incorrect state");
+   endrule
+
+   Reg #(Bool) rg_mm2s_throughput <- mkReg (False);
+   rule rl_debug_mm2s_throughput_start (axi4s_s_data_shim.master.canPeek
+                                        && !rg_mm2s_throughput
+                                        && rg_verbosity > 1);
+      $display ("%m tock 1");
+      rg_mm2s_throughput <= True;
+   endrule
+   rule rl_debug_mm2s_throughput_print (rg_mm2s_throughput
+                                        && rg_verbosity > 1);
+      $display ("%m tock");
+      $display ("    axi4s_s_data_shim.slave.canPut: ", fshow (axi4s_s_data_shim.slave.canPut));
+      $display ("    fifo_data.notFull: ", fshow (fifo_data.notFull));
+      $display ("    fifo_data.notEmpty: ", fshow (fifo_data.notEmpty));
+      $display ("    shim.slave.r.canPeek: ", fshow (shim.slave.r.canPeek));
+   endrule
+   rule rl_debug_mm2s_throughput_end (axi4s_s_data_shim.master.canPeek
+                                      && axi4s_s_data_shim.master.peek.tlast
+                                      && rg_verbosity > 1);
+      rg_mm2s_throughput <= False;
+   endrule
+
+
+   Reg #(Bool) rg_s2mm_throughput <- mkReg (False);
+   rule rl_debug_s2mm_throughput_start (axi4s_m_data_shim.master.canPeek
+                                        && !rg_s2mm_throughput
+                                        && rg_verbosity > 1);
+      $display ("%m tick 1");
+      rg_s2mm_throughput <= True;
+   endrule
+   rule rl_debug_s2mm_throughput_print (rg_s2mm_throughput
+                                        && rg_verbosity > 1);
+      $display ("%m tick");
+      $display ("    axi4s_m_data_shim.master.canPeek: ", fshow (axi4s_m_data_shim.master.canPeek));
+      $display ("    fifo_data.notFull: ", fshow (fifo_data.notFull));
+      $display ("    fifo_data.notEmpty: ", fshow (fifo_data.notEmpty));
+      $display ("    shim.slave.w.canPut: ", fshow (shim.slave.w.canPut));
+   endrule
+   rule rl_debug_s2mm_throughput_end (axi4s_m_data_shim.master.canPeek
+                                      && axi4s_m_data_shim.master.peek.tlast
+                                      && rg_verbosity > 1);
+      rg_s2mm_throughput <= False;
    endrule
 
 

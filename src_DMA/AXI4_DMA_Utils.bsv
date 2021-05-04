@@ -111,10 +111,10 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
    Reg #(Bit #(32)) rg_tick_counter <- mkReg (0);
    Reg #(Bit #(32)) rg_txfer_counter <- mkReg (0);
    Reg #(Bit #(3)) rg_meta_counter <- mkReg (0);
-   AXI4Stream_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_m_data_shim <- mkAXI4StreamShimFF1;
-   AXI4Stream_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_m_meta_shim <- mkAXI4StreamShimFF1;
-   AXI4Stream_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_s_data_shim <- mkAXI4StreamShimFF1;
-   AXI4Stream_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_s_meta_shim <- mkAXI4StreamShimFF1;
+   AXI4Stream_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_m_data_shim <- mkAXI4StreamShimFF;
+   AXI4Stream_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_m_meta_shim <- mkAXI4StreamShimFF;
+   AXI4Stream_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_s_data_shim <- mkAXI4StreamShimFF;
+   AXI4Stream_Shim #(strm_id_, sdata_, sdest_, suser_) axi4s_s_meta_shim <- mkAXI4StreamShimFF;
    rule rl_debug (rg_verbosity > 2);
       $display ("AXI DMA Stream Delay Loopback rl_debug");
       $display ("    rg_input_started: ", fshow (rg_input_started));
