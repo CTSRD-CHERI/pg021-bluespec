@@ -246,7 +246,9 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
       end
       shim.clear;
       axi4s_s_data_shim.clear;
+      axi4s_s_meta_shim.clear;
       axi4s_m_data_shim.clear;
+      axi4s_m_meta_shim.clear;
       crg_dir[0] <= MM2S;
 
       fifo_data.clear;
