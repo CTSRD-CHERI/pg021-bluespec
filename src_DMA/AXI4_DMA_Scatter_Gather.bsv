@@ -109,6 +109,7 @@ module mkAXI4_DMA_Scatter_Gather
    // The address of the current buffer descriptor word (used when
    // reading and writing memory)
    Reg #(Bit #(addr_)) rg_addr_bd_cur <- mkRegU;
+   let rg_addr_bd_incr = rg_addr_bd_cur + 4;
 
    // The BD index that is currently being worked on
    Reg #(DMA_BD_Index) rg_bd_index <- mkRegU;
@@ -208,7 +209,7 @@ module mkAXI4_DMA_Scatter_Gather
                             && shim.slave.r.canPeek);
       AXI4_RFlit #(id_, data_, ruser_) rflit = shim.slave.r.peek;
       shim.slave.r.drop;
-      rg_addr_bd_cur <= rg_addr_bd_cur + 4;
+      rg_addr_bd_cur <= rg_addr_bd_incr;
       let rsp_count_new = rg_rsp_count;
 
       if (rflit.rresp == OKAY || rflit.rresp == EXOKAY) begin
@@ -257,7 +258,7 @@ module mkAXI4_DMA_Scatter_Gather
                          "    main words");
             end
 
-            match {.arflit, .len} = axi4_ar_burst_flit (rg_addr_bd_cur + 4, True);
+            match {.arflit, .len} = axi4_ar_burst_flit (rg_addr_bd_incr, True);
             shim.slave.ar.put (arflit);
             if (rg_verbosity > 0) begin
                $display ("AXI4 SG Unit: DMA sent AR flit to read app words");
@@ -357,7 +358,7 @@ module mkAXI4_DMA_Scatter_Gather
       };
       shim.slave.w.put(wflit);
       rg_bd_index <= unpack (pack (rg_bd_index) + 1);
-      rg_addr_bd_cur <= rg_addr_bd_cur + 4;
+      rg_addr_bd_cur <= rg_addr_bd_incr;
       rg_req_len <= zeroExtend (len);
       rg_rsp_count <= 1; // we send a wflit in this rule
       rg_received_err_rsp <= False;
@@ -410,7 +411,7 @@ module mkAXI4_DMA_Scatter_Gather
       end
 
       rg_bd_index <= unpack (pack (rg_bd_index) + 1);
-      rg_addr_bd_cur <= rg_addr_bd_cur + 4;
+      rg_addr_bd_cur <= rg_addr_bd_incr;
       rg_rsp_count <= rg_rsp_count + 1;
    endrule
 
