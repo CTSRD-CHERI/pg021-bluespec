@@ -65,10 +65,14 @@ typedef enum {
    DMA_RESET,
    DMA_HALTED,
    DMA_IDLE,
-   DMA_READ_RSP_OUTSTANDING,
-   DMA_WRITE_START,
-   DMA_WRITE_LOOP,
-   DMA_WRITE_RSP_OUTSTANDING
+   DMA_MAIN_READ_RSP_OUTSTANDING,
+   DMA_APP_READ_RSP_OUTSTANDING,
+   DMA_MAIN_WRITE_START,
+   DMA_APP_WRITE_START,
+   DMA_MAIN_WRITE_LOOP,
+   DMA_APP_WRITE_LOOP,
+   DMA_MAIN_WRITE_RSP_OUTSTANDING,
+   DMA_APP_WRITE_RSP_OUTSTANDING
 } DMA_SG_State deriving (Eq, Bits, FShow);
 
 
@@ -95,6 +99,8 @@ module mkAXI4_DMA_Scatter_Gather
 
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
 
+   let read_app_words = True;
+
    Reg #(DMA_SG_State) rg_state <- mkReg(DMA_HALTED);
 
    // The start address of the current buffer descriptor
@@ -114,8 +120,9 @@ module mkAXI4_DMA_Scatter_Gather
    // This holds (the number of requests) - 1
    Reg #(AXI4_Len) rg_req_len <- mkRegU;
 
-   // counts the number of responses received
+   // for reads, counts the number of responses received
    // for reads, this should be in sync with rg_bd_index
+   // for writes, counts the number of write flits that have been sent
    Reg #(AXI4_Len) rg_rsp_count <- mkReg (0);
 
    // Whether the current transaction gave us an error response
@@ -138,14 +145,19 @@ module mkAXI4_DMA_Scatter_Gather
 
    Bit #(id_) base_id = 0;
 
-   // All the reads that the scatter-gather engine makes should be bursts
-   // that request a full buffer descriptor.
-   // read_app_words controls whether we also read application words.
-   // All current uses of this function set read_app_words to True
-   function Tuple2 #(AXI4_ARFlit #(id_, addr_, aruser_), AXI4_Len) axi4_ar_burst_flit (Bit #(addr_) address, Bool read_app_words);
-      AXI4_Len len = fromInteger (valueOf (DMA_Num_Words))
-                - (read_app_words ? 0 : 5) // whether to read the application words
-                - 1;                       // burst size is arlen + 1
+   // In order to work with the current tag controller, DMA Scatter Gather
+   // memory operations are limited to 8 flits.
+   // At 32bits, two bursts are used. One burst contains the DMA control words,
+   // and the other contains the application words.
+   // app_words controls whether we read application words or DMA control words.
+   function Tuple2 #(AXI4_ARFlit #(id_, addr_, aruser_), AXI4_Len) axi4_ar_burst_flit (Bit #(addr_) address, Bool app_words);
+      // TODO remove hardwired 5?
+      AXI4_Len len = app_words ? 5     // read only the app words
+                                 - 1   // burst size is arlen + 1
+                               : fromInteger (valueOf (DMA_Num_Words))
+                                 - 5   // don't read app words
+                                 - 1;  // burst size is arlen + 1
+
 
       AXI4_ARFlit #(id_, addr_, aruser) ar_flit = AXI4_ARFlit {
          arid : base_id,
@@ -189,12 +201,15 @@ module mkAXI4_DMA_Scatter_Gather
    endrule
 
 
-   // The only time we should have outstanding read responses is when we
-   // are in the DMA_READ_RSP_OUTSTANDING state
-   rule rl_handle_read_rsp (rg_state == DMA_READ_RSP_OUTSTANDING
+   // handle read responses and write them into the appropriate register
+   rule rl_handle_read_rsp ((rg_state == DMA_MAIN_READ_RSP_OUTSTANDING
+                             || (rg_state == DMA_APP_READ_RSP_OUTSTANDING
+                                 && read_app_words))
                             && shim.slave.r.canPeek);
       AXI4_RFlit #(id_, data_, ruser_) rflit = shim.slave.r.peek;
       shim.slave.r.drop;
+      rg_addr_bd_cur <= rg_addr_bd_cur + 4;
+      let rsp_count_new = rg_rsp_count;
 
       if (rflit.rresp == OKAY || rflit.rresp == EXOKAY) begin
          // this handles the 32bit and 64bit cases
@@ -208,7 +223,7 @@ module mkAXI4_DMA_Scatter_Gather
 
          v_v_rg_bd[cur_dir][pack (rg_bd_index)] <= rdata_active;
          rg_bd_index <= unpack (pack (rg_bd_index) + 1);
-         rg_rsp_count <= rg_rsp_count + 1;
+         rsp_count_new = rg_rsp_count + 1;
          if (rg_verbosity > 0) begin
             $display ("updated register ", fshow(rg_bd_index), " with data : ", fshow(rdata_active));
             $display ("    original data: ", fshow (rflit.rdata));
@@ -231,37 +246,59 @@ module mkAXI4_DMA_Scatter_Gather
       end
 
       if (rflit.rlast) begin
-         if (pack (rg_bd_index) != truncate (rg_req_len)) begin
-            // not sure what to do here...
-            // We got fewer responses from memory than we should have
-            $display ("AXI4 SG Unit: ERROR: memory didn't give us the right number of responses");
-            $display ("    rg_bd_index: ", fshow(pack(rg_bd_index)),
-                      " rg_req_len: ", fshow(rg_req_len));
-         end else begin
-            rg_state <= DMA_IDLE;
-            if (rg_verbosity > 0) begin
-               $display ("got enough responses from memory");
-            end
-            if (cur_dir == pack (MM2S)) begin
-               if (rg_verbosity > 0) begin
-                  $display ("AXI4 SG Unit: triggering mm2s transfer after finishing SG read");
-               end
-               drg_sg_finished <= True;
-            end
-         end
+         if (read_app_words && rg_bd_index == DMA_STATUS) begin
+            // DMA_STATUS is the last non-app word
+            // we've finished reading all non-app words and now we need
+            // to read the app words
 
-         // check that we wrote the last index when rlast is true
-         // This checks that our requests were the right size
-         // TODO this will also fire if you make requests that don't include
-         //      the application words.
-         //      Currently, all the requests should include the application words
-         if (rg_bd_index != maxBound) begin
-            DMA_BD_Index maxb = maxBound;
-            $display ("AXI4 DMA SG: index is not max bound");
-            $display ("    index: ", fshow (rg_bd_index));
-            $display ("    max bound: ", fshow (maxb));
+            if (rg_state != DMA_MAIN_READ_RSP_OUTSTANDING) begin
+               $display ("DMA SG ERROR: something's gone wrong. we've read past the\n",
+                         "    end of the main words but still thought we were reading\n",
+                         "    main words");
+            end
+
+            match {.arflit, .len} = axi4_ar_burst_flit (rg_addr_bd_cur + 4, True);
+            shim.slave.ar.put (arflit);
+            if (rg_verbosity > 0) begin
+               $display ("AXI4 SG Unit: DMA sent AR flit to read app words");
+               $display ("    flit: ", fshow(arflit));
+            end
+            rg_req_len <= len;
+            rsp_count_new = 0;
+            rg_state <= DMA_APP_READ_RSP_OUTSTANDING;
+         end else begin
+            if (pack (rg_rsp_count) != truncate (rg_req_len)) begin
+               // not sure what to do here...
+               // We got fewer responses from memory than we should have
+               $display ("AXI4 SG Unit: ERROR: memory didn't give us the right number of responses");
+               $display ("    rg_bd_index: ", fshow(pack(rg_bd_index)),
+                         " rg_req_len: ", fshow(rg_req_len));
+            end else begin
+               rg_state <= DMA_IDLE;
+               if (rg_verbosity > 0) begin
+                  $display ("got enough responses from memory");
+               end
+               if (cur_dir == pack (MM2S)) begin
+                  if (rg_verbosity > 0) begin
+                     $display ("AXI4 SG Unit: triggering mm2s transfer after finishing SG read");
+                  end
+                  drg_sg_finished <= True;
+               end
+            end
+
+            // check that we wrote the last index when rlast is true
+            // This checks that our requests were the right size
+            if ((read_app_words && rg_bd_index != maxBound)
+                || (!read_app_words && rg_bd_index != DMA_STATUS)) begin
+               DMA_BD_Index expected_max = read_app_words ? maxBound : DMA_STATUS;
+               $display ("AXI4 DMA SG: index is not the expected value at end of transfer");
+               $display ("    index: ", fshow (rg_bd_index));
+               $display ("    expected: ", fshow (expected_max));
+            end
          end
       end
+
+      rg_rsp_count <= rsp_count_new;
 
       if (rflit.rid != base_id) begin
          $display ("AXI4 SG Unit: ERROR: something went wrong - DMA got a response with an ID that it didn't request");
@@ -269,15 +306,19 @@ module mkAXI4_DMA_Scatter_Gather
 
    endrule
 
-   rule rl_write (rg_state == DMA_WRITE_START);
+   rule rl_write (rg_state == DMA_MAIN_WRITE_START
+                  || rg_state == DMA_APP_WRITE_START);
       // TODO at the moment some transactions are wasted. Maybe only write the words
       // that have changed? This would require more internal state, not sure how it would
       // affect bus contention
       // NOTE burst length = awlen + 1
-      Bool write_app_words = True;
-      AXI4_Len len = fromInteger (valueOf (DMA_Num_Words))
-                     - (write_app_words ? 0 : 5) // whether to read the application words
-                     - 1;                       // burst size is arlen + 1
+      let write_app = rg_state == DMA_APP_WRITE_START;
+      // TODO remove hardwired 5?
+      AXI4_Len len = write_app ? 5    // write only the application words
+                                 - 1  // burst size is arlen + 1
+                               : fromInteger (valueOf (DMA_Num_Words))
+                                 - 5  // don't write application words
+                                 - 1; // burst size is arlen + 1
 
       // TODO write more data for higher bus widths
       AXI4_AWFlit #(id_, addr_, awuser_) awflit = AXI4_AWFlit {
@@ -316,8 +357,9 @@ module mkAXI4_DMA_Scatter_Gather
       };
       shim.slave.w.put(wflit);
       rg_bd_index <= unpack (pack (rg_bd_index) + 1);
-      rg_addr_bd_cur <= rg_addr_bd_cur + 4; // not strictly necessary but useful to keep track
+      rg_addr_bd_cur <= rg_addr_bd_cur + 4;
       rg_req_len <= zeroExtend (len);
+      rg_rsp_count <= 1; // we send a wflit in this rule
       rg_received_err_rsp <= False;
 
       if (rg_verbosity > 1) begin
@@ -326,12 +368,15 @@ module mkAXI4_DMA_Scatter_Gather
          $display ("   first data: ", fshow (val_to_write));
          $display ("   request flit: ", fshow(awflit));
          $display ("   data flit: ", fshow(wflit));
+         $display ("   write_app: ", fshow (write_app));
       end
-      rg_state <= DMA_WRITE_LOOP;
+      rg_state <= write_app ? DMA_APP_WRITE_LOOP
+                            : DMA_MAIN_WRITE_LOOP;
    endrule
 
-   rule rl_write_loop (rg_state == DMA_WRITE_LOOP);
-      Bool islast = pack (rg_bd_index) == (truncate (rg_req_len));
+   rule rl_write_loop (rg_state == DMA_MAIN_WRITE_LOOP
+                       || rg_state == DMA_APP_WRITE_LOOP);
+      Bool islast = rg_rsp_count == rg_req_len;
       // this handles the 32bit and 64bit cases
       // TODO handle other cases?
       // TODO handle writing more data when the data bus supports it?
@@ -359,14 +404,18 @@ module mkAXI4_DMA_Scatter_Gather
             $display ("finished requesting write to last descriptor word");
             $display ("last index written: ", fshow(rg_bd_index));
          end
-         rg_state <= DMA_WRITE_RSP_OUTSTANDING;
+         let write_app = rg_state == DMA_APP_WRITE_LOOP;
+         rg_state <= write_app ? DMA_APP_WRITE_RSP_OUTSTANDING
+                               : DMA_MAIN_WRITE_RSP_OUTSTANDING;
       end
 
       rg_bd_index <= unpack (pack (rg_bd_index) + 1);
       rg_addr_bd_cur <= rg_addr_bd_cur + 4;
+      rg_rsp_count <= rg_rsp_count + 1;
    endrule
 
-   rule rl_handle_write_rsp_debug (rg_state == DMA_WRITE_RSP_OUTSTANDING);
+   rule rl_handle_write_rsp_debug (rg_state == DMA_MAIN_WRITE_RSP_OUTSTANDING
+                                   || rg_state == DMA_APP_WRITE_RSP_OUTSTANDING);
       if (rg_verbosity > 1) begin
          $display ("write response outstanding");
       end
@@ -381,7 +430,8 @@ module mkAXI4_DMA_Scatter_Gather
    endrule
 
    // handle receipt of outstanding write response
-   rule rl_handle_write_rsp (rg_state == DMA_WRITE_RSP_OUTSTANDING
+   rule rl_handle_write_rsp ((rg_state == DMA_MAIN_WRITE_RSP_OUTSTANDING
+                              || rg_state == DMA_APP_WRITE_RSP_OUTSTANDING)
                              && shim.slave.b.canPeek);
       AXI4_BFlit #(id_, buser_) bflit = shim.slave.b.peek;
       shim.slave.b.drop;
@@ -424,7 +474,10 @@ module mkAXI4_DMA_Scatter_Gather
          $display ("received write response");
       end
       // TODO if we receive an error response, need to deal with it properly
-      rg_state <= iserr ? DMA_IDLE : DMA_IDLE;
+      let write_app = rg_state == DMA_APP_WRITE_RSP_OUTSTANDING;
+      rg_state <= write_app ? iserr ? DMA_IDLE
+                                    : DMA_IDLE
+                            : DMA_APP_WRITE_START;
       rw_trigger_interrupt.wset (crg_dir[0]);
       if (iserr) begin
          $display ("AXI4 SG Unit: ERROR: DMA RECEIVED WRITE ERROR RESPONSE");
@@ -434,12 +487,14 @@ module mkAXI4_DMA_Scatter_Gather
 
    // detect issues
    rule rl_detect_rresp_in_wrong_state (shim.slave.r.canPeek
-                                        && rg_state != DMA_READ_RSP_OUTSTANDING);
+                                        && rg_state != DMA_MAIN_READ_RSP_OUTSTANDING
+                                        && rg_state != DMA_APP_READ_RSP_OUTSTANDING);
       $display ("AXI4 SG Unit: ERROR: DMA detected read response when DMA is in the wrong state");
    endrule
 
    rule rl_detect_wresp_in_wrong_state (shim.slave.b.canPeek
-                                        && rg_state != DMA_WRITE_RSP_OUTSTANDING);
+                                        && rg_state != DMA_MAIN_WRITE_RSP_OUTSTANDING
+                                        && rg_state != DMA_APP_WRITE_RSP_OUTSTANDING);
       $display ("AXI4 SG Unit: ERROR: DMA detected write response when DMA is in the wrong state");
    endrule
 
@@ -469,8 +524,8 @@ module mkAXI4_DMA_Scatter_Gather
       crg_dir[0] <= dir;
 
       // bus transaction
-      Bool read_app_words = True;
-      match {.arflit, .len} = axi4_ar_burst_flit (start_addr, read_app_words);
+      // don't read app words yet
+      match {.arflit, .len} = axi4_ar_burst_flit (start_addr, False);
       shim.slave.ar.put (arflit);
       if (rg_verbosity > 0) begin
          $display ("AXI4 SG Unit: DMA sent AR flit: ", fshow(arflit));
@@ -484,7 +539,7 @@ module mkAXI4_DMA_Scatter_Gather
       rg_rsp_count <= 0;
       rg_received_err_rsp <= False;
 
-      rg_state <= DMA_READ_RSP_OUTSTANDING;
+      rg_state <= DMA_MAIN_READ_RSP_OUTSTANDING;
    endmethod
 
    /*
@@ -503,7 +558,7 @@ module mkAXI4_DMA_Scatter_Gather
 
       rg_addr_bd_start <= start_addr;
       rg_addr_bd_cur <= start_addr;
-      rg_state <= DMA_WRITE_START;
+      rg_state <= DMA_MAIN_WRITE_START;
       rg_bd_index <= minBound;
       rg_rsp_count <= 0;
    endmethod
@@ -523,8 +578,8 @@ module mkAXI4_DMA_Scatter_Gather
       Bit #(addr_) addr = zeroExtend (v_v_rg_bd[pack (dir)][pack (DMA_NXTDESC)]);
 
       // bus transaction
-      Bool read_app_words = True;
-      match {.arflit, .len} = axi4_ar_burst_flit (addr, read_app_words);
+      // don't read app words yet
+      match {.arflit, .len} = axi4_ar_burst_flit (addr, False);
       shim.slave.ar.put (arflit);
 
       // internal bookkeeping
@@ -535,7 +590,7 @@ module mkAXI4_DMA_Scatter_Gather
       rg_rsp_count <= 0;
       rg_received_err_rsp <= False;
 
-      rg_state <= DMA_READ_RSP_OUTSTANDING;
+      rg_state <= DMA_MAIN_READ_RSP_OUTSTANDING;
    endmethod
 
    /*
