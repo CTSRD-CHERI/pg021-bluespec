@@ -404,6 +404,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
                                 && ((rg_state == COPYING && fifo_data.count > 7) // there is enough data for an 8-flit burst
                                     || (rg_state == WAIT_FOR_FINAL_DEQ))       // we have received the last flit from the stream
                                 && fifo_data.notEmpty
+                                && shim.slave.aw.canPut
                                 && !rg_txion_in_flight
                                 && !rg_bresp_required);
       AXI4_Len len = min (7, zeroExtend (pack (fifo_data.count - 1)));
@@ -468,6 +469,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    rule rl_s2mm_produce_wflit (crg_dir[0] == S2MM
                               && (rg_state == COPYING || rg_state == WAIT_FOR_FINAL_DEQ)
                               && rg_txion_in_flight
+                              && shim.slave.w.canPut
                               && fifo_data.notEmpty);
       if (rg_prev_arlen == rg_txion_counter) begin
          // After this flit, we will have sent off enough data that we
@@ -531,7 +533,8 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    // so none of the MM2S rules start off at IDLE
 
    // Start off with transferring metadata on the metadata stream
-   rule rl_mm2s_meta_transfer (rg_state == META_SEND_MM2S);
+   rule rl_mm2s_meta_transfer (rg_state == META_SEND_MM2S
+                               && axi4s_s_meta_shim.slave.canPut);
       AXI4Stream_Flit #(sid_, sdata_, sdest_, suser_) flit = AXI4Stream_Flit {
          tdata: zeroExtend (v_v_rg_bd[pack (MM2S)][pack (DMA_APP0) + zeroExtend (rg_meta_counter)]),
          tstrb: ~0,
@@ -556,7 +559,9 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    // Copy data from internal FIFOs into the stream interface when possible
    rule rl_mm2s_fifof_deq ((rg_state == COPYING
                             || rg_state == WAIT_FOR_FINAL_DEQ)
-                          && crg_dir[0] == MM2S);
+                          && crg_dir[0] == MM2S
+                          && axi4s_s_data_shim.slave.canPut
+                          && rg_stream_out_count < rg_buf_len);
       fifo_data.deq;
       if (rg_verbosity > 1) begin
          $display ("DMA Copy Unit: fifo_data dequeue: ", fshow (fifo_data.first));
@@ -601,15 +606,14 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    // in the rule above was WAIT_FOR_FINAL_DEQ) and with aggressive
    // conditions the conflict was still present
    rule rl_mm2s_update_state (rg_state == WAIT_FOR_FINAL_DEQ
-                              && crg_dir[0] == MM2S);
-      if (rg_stream_out_count + 4 >= rg_buf_len) begin
-         $display ("DMA Copy Unit: finished stream transfer, going to IDLE");
-         // Set BD status complete and transferred bytes fields
-         v_v_rg_bd[pack (MM2S)][pack (DMA_STATUS)] <= {1'b1, 5'b0, rg_buf_len};
+                              && crg_dir[0] == MM2S
+                              && rg_stream_out_count >= rg_buf_len);
+      $display ("DMA Copy Unit: finished stream transfer, going to IDLE");
+      // Set BD status complete and transferred bytes fields
+      v_v_rg_bd[pack (MM2S)][pack (DMA_STATUS)] <= {1'b1, 5'b0, rg_buf_len};
 
-         rg_state <= IDLE;
-         rw_end_trigger.wset (MM2S);
-      end
+      rg_state <= IDLE;
+      rw_end_trigger.wset (MM2S);
    endrule
 
    // This rule handles refilling the FIFO when there is enoug space in it
@@ -618,7 +622,8 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
                             && rg_state == COPYING
                             && crg_dir[0] == MM2S
                             && rg_buf_cur < rg_buf_len // ie amt_buf_left > 0
-                            && !rg_txion_in_flight);
+                            && !rg_txion_in_flight
+                            && shim.slave.ar.canPut);
       Bit #(3) len = fn_arlen_from_4k_boundary (rg_addr_next_byte);
       if (fn_crosses_4k_boundary (rg_addr_next_byte, len)) begin
          // if we get here, then it means that fn_crosses_4k_boundary thinks that our address will

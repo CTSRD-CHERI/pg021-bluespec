@@ -126,7 +126,8 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
       $display ("    data_fifo.notEmpty: ", fshow (data_fifo.notEmpty));
       $display ("    meta_fifo.notEmpty: ", fshow (data_fifo.notEmpty));
    endrule
-   rule rl_get_input_meta (axi4s_m_meta_shim.master.canPeek);
+   rule rl_get_input_meta (axi4s_m_meta_shim.master.canPeek
+                           && meta_fifo.notFull);
       axi4s_m_meta_shim.master.drop;
       if (!rg_meta_input_started) begin
          if (rg_verbosity > 0) begin
@@ -141,6 +142,7 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
       rg_meta_counter <= rg_meta_counter + 1;
    endrule
    rule rl_get_input_data (axi4s_m_data_shim.master.canPeek
+                           && data_fifo.notFull
                            && !rg_input_finished);
       if (!rg_input_started) begin
          if (rg_verbosity > 0) begin
