@@ -11,10 +11,14 @@ import SourceSink :: *;
 import AXI4_DMA_Types :: *;
 import AXI4_DMA_Internal_Reg_Module :: *;
 
+import CHERICap :: *;
+import CHERICC_Fat :: *;
+
 typedef enum {
    RESET,
    HALTED,
-   NOT_RESET
+   RUNNING,
+   WAIT_SECOND_WRITE
 } Reg_State deriving (Bits, FShow, Eq);
 
 interface AXI4_DMA_Register_Module_IFC #(numeric type id_
@@ -47,7 +51,11 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
                                     Reg #(Bool) rg_s2mm_hit_tail)
                                    (AXI4_DMA_Register_Module_IFC #(id_, addr_, data_, awuser_, wuser_, buser_, aruser_, ruser_))
                                    provisos ( Add #(a__, SizeOf #(DMA_Reg_Index), addr_)
-                                            , Add #(b__, SizeOf #(DMA_Reg_Word), data_));
+                                            , Add #(b__, SizeOf #(DMA_Reg_Word), data_)
+                                            , Add #(c__, data_, 128)
+                                            , Add #(d__, data_, 129)
+                                            , Add #(e__, c__, 129)
+                                            , Add #(f__, wuser_, 1));
 
    // TODO not sure if this is the cleanest way to specify this in Bluespec.
    // Would like to have a compile-time variable here which contains the trigger
@@ -65,6 +73,10 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
                  aruser_, ruser_) serialiser <- mkSerialiser (shim.master);
 
    Reg #(Reg_State) rg_state <- mkReg (RESET);
+
+   // aggregate the capability that is currently being written
+   Reg #(CapMem) rg_cap <- mkReg (nullCap);
+   Reg #(Bit #(1)) rg_cap_valid <- mkReg (0);
 
    // Used to write triggers
    RWire #(DMA_Dir) rw_trigger <- mkRWire;
@@ -90,43 +102,63 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
       rg_state <= HALTED;
    endrule
 
-   // behaviour: only accept single-flit writes where the size is DMA_Reg_Word-sized
+   // behaviour: when writing the _CAP registers
+   //               only accept 2-flit 64-bit requests
+   //               TODO probably want to change this for 32-bit
+   //            otherwise
+   //               only accept single-flit DMA_Reg_Word-sized write requests
+   //
    //            only accept transactions when both the AW and W signals are valid
-   rule rl_handle_write (rg_state != RESET
+   rule rl_handle_write ((rg_state == RUNNING
+                          || rg_state == HALTED)
                          && serialiser.aw.canPeek
                          && serialiser.w.canPeek);
       let awflit = serialiser.aw.peek;
       let wflit = serialiser.w.peek;
-      serialiser.aw.drop;
-      serialiser.w.drop;
+      DMA_Reg_Index idx = unpack (truncate (awflit.awaddr >> 2));
 
       // AW flit sanitization
       let is_aligned = awflit.awaddr[1:0] == 0;
       let is_single_flit = awflit.awlen == 0;
+      let is_double_flit = awflit.awlen == 1;
+      let is_cap_reg = idx == DMA_MM2S_CURDESC_CAP
+                       || idx == DMA_S2MM_CURDESC_CAP;
       let is_correct_burst_type = awflit.awburst == FIXED || awflit.awburst == INCR; // WRAP requires a length >= 2 flits
-      let is_correct_size = awflit.awsize == 4; // our words are always 4 bytes
+      // our words are either 4 bytes or 8 bytes depending on what register
+      // is being written
+      let is_correct_size = is_cap_reg ? awflit.awsize == 8
+                                       : awflit.awsize == 4;
+      let is_correct_num_of_flits = is_cap_reg ? awflit.awlen == 1
+                                               : awflit.awlen == 0;
+
       // don't care about lock, cache, prot, qos or region
       let is_valid_request = is_aligned
-                             && is_single_flit
+                             && is_correct_num_of_flits
                              && is_correct_burst_type
                              && is_correct_size;
 
       // TODO handle buses that aren't 32 or 64 bits?
       // not sure that is required for this slave port
-      DMA_Reg_Index idx = unpack (truncate (awflit.awaddr >> 2));
       let word_lower = awflit.awaddr[2] == 1'b0;
       DMA_Reg_Word newval = word_lower ? truncate (wflit.wdata)
                                        : truncateLSB (wflit.wdata);
 
       if (is_valid_request) begin
+         // update the register value written
+         if (is_cap_reg) begin
+            // TODO this assumes 64-bit-wide bus
+            rg_cap <= zeroExtend (wflit.wdata);
+            rg_cap_valid <= zeroExtend (wflit.wuser);
+            rg_state <= WAIT_SECOND_WRITE;
+         end else begin
+            dma_int_reg.external_write (idx, newval);
+         end
          if (idx == DMA_MM2S_DMACR || idx == DMA_S2MM_DMACR) begin
             if (newval[0] == 1) begin
                // transition DMA engine into an idle state from halted state
                pw_halt_to_idle.send;
             end
          end
-         // update the register value written
-         dma_int_reg.external_write (idx, newval);
          if (rg_verbosity > 1) begin
             // the internal register file already displays the value that is passed in
             // also display the raw value for debugging when required
@@ -135,6 +167,7 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
       end else begin
          $display ("dma slave write failed, index ", fshow (idx), " with value ", fshow (newval));
          $display ("conditions:");
+         $display ("   flit: ", fshow (awflit));
          $display ("   is_aligned: ", fshow (is_aligned));
          $display ("      awflit.awaddr: ", fshow (awflit.awaddr));
          $display ("   is_single_flit: ", fshow (is_single_flit));
@@ -145,14 +178,19 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
          $display ("      awflit.awsize: ", fshow (awflit.awsize));
       end
 
-      // craft and send reply
+      // craft and send reply, and drop awflit if this was a single-flit write
       // TODO for now, we just always return OKAY
       // We should return a SLVERR when the request is not valid
-      AXI4_BFlit #(id_, buser_) bflit = AXI4_BFlit { bid: awflit.awid
-                                                   //, bresp: is_valid_request ? OKAY : SLVERR
-                                                   , bresp: OKAY
-                                                   , buser: 0 };
-      serialiser.b.put (bflit);
+      if (is_single_flit) begin
+         AXI4_BFlit #(id_, buser_) bflit = AXI4_BFlit { bid: awflit.awid
+                                                      //, bresp: is_valid_request ? OKAY : SLVERR
+                                                      , bresp: OKAY
+                                                      , buser: 0 };
+         serialiser.b.put (bflit);
+         serialiser.aw.drop;
+      end
+
+      serialiser.w.drop;
 
       // handle detecting writes to special trigger registers
       // trigger_index_s2mm and trigger_index_mm2s should be compile-time constant values
@@ -214,9 +252,49 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
       end
    endrule
 
+   rule rl_handle_write_2 (rg_state == WAIT_SECOND_WRITE
+                           && serialiser.aw.canPeek
+                           && serialiser.w.canPeek);
+      let awflit = serialiser.aw.peek;
+      let wflit = serialiser.w.peek;
+      DMA_Reg_Index idx = unpack (truncate (awflit.awaddr >> 2));
+
+      // craft and send reply
+      // TODO maybe return something that is not OKAY
+      AXI4_BFlit #(id_, buser_) bflit = AXI4_BFlit { bid: awflit.awid
+                                                   , bresp: OKAY
+                                                   , buser: 0 };
+      serialiser.b.put (bflit);
+      serialiser.aw.drop;
+      serialiser.w.drop;
+
+      // TODO this assumes that the bus is 64-bits and a capability is 128-bits
+      Bit #(1) is_valid = zeroExtend (wflit.wuser) & rg_cap_valid;
+      CapMem newCap = unpack ({is_valid, // only valid if both flits had wuser == 1
+                               wflit.wdata,
+                               truncate(rg_cap)});
+      CapPipe newCapFat = cast (newCap);
+
+      if (idx == DMA_S2MM_CURDESC_CAP) begin
+         dma_int_reg.s2mm_curdesc_cap_write (newCapFat);
+      end
+      else if (idx == DMA_MM2S_CURDESC_CAP) begin
+         dma_int_reg.mm2s_curdesc_cap_write (newCapFat);
+      end
+
+
+      if (rg_verbosity > 0) begin
+         $display ("wrote capability into rg_cap");
+         $display ("    new cap: ", fshow (newCapFat));
+         $display ("    index: ", fshow (idx));
+      end
+      rg_state <= RUNNING;
+   endrule
+
    // behaviour: only accept single-flit reads where the size is DMA_Reg_Word-sized
    //            and the address is 32bit aligned
-   rule rl_handle_read (rg_state != RESET
+   rule rl_handle_read ((rg_state == RUNNING
+                         || rg_state == HALTED)
                         && serialiser.ar.canPeek);
       serialiser.ar.drop;
       let arflit = serialiser.ar.peek;
@@ -284,7 +362,7 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
       if (rg_state != HALTED) begin
          $display ("DMA Reg Unit: ERROR: halt_to_idle when not halted1");
       end
-      rg_state <= NOT_RESET;
+      rg_state <= RUNNING;
    endmethod
 endmodule
 

@@ -1,6 +1,8 @@
 package AXI4_DMA_Internal_Reg_Module;
 
 import AXI4_DMA_Types :: *;
+import CHERICap :: *;
+import CHERICC_Fat :: *;
 
 typedef enum {
    RESET,
@@ -29,6 +31,9 @@ interface AXI4_DMA_Int_Reg_IFC;
    method MM2S_TAILDESC_MSB mm2s_taildesc_msb;
    method Action            mm2s_taildesc_msb_write (MM2S_TAILDESC_MSB newval);
 
+   method CapPipe           mm2s_curdesc_cap;
+   method Action            mm2s_curdesc_cap_write  (CapPipe newval);
+
 
    method S2MM_DMACR        s2mm_dmacr;
    method Action            s2mm_dmacr_write        (S2MM_DMACR newval);
@@ -47,6 +52,9 @@ interface AXI4_DMA_Int_Reg_IFC;
 
    method S2MM_TAILDESC_MSB s2mm_taildesc_msb;
    method Action            s2mm_taildesc_msb_write (S2MM_TAILDESC_MSB newval);
+
+   method CapPipe           s2mm_curdesc_cap;
+   method Action            s2mm_curdesc_cap_write  (CapPipe newval);
 
 
    // These methods should be used by the slave interface to write the appropriate
@@ -70,6 +78,7 @@ module mkAXI4_DMA_Int_Reg (AXI4_DMA_Int_Reg_IFC);
    Reg #(MM2S_CURDESC_MSB)  rg_mm2s_curdesc_msb  <- mkReg (mm2s_curdesc_msb_default);
    Reg #(MM2S_TAILDESC)     rg_mm2s_taildesc     <- mkReg (mm2s_taildesc_default);
    Reg #(MM2S_TAILDESC_MSB) rg_mm2s_taildesc_msb <- mkReg (mm2s_taildesc_msb_default);
+   Reg #(CapPipe)           rg_mm2s_curdesc_cap  <- mkReg (nullCap);
 
    Reg #(S2MM_DMACR)        rg_s2mm_dmacr        <- mkReg (s2mm_dmacr_default);
    Reg #(S2MM_DMASR)        rg_s2mm_dmasr        <- mkReg (s2mm_dmasr_default);
@@ -77,6 +86,7 @@ module mkAXI4_DMA_Int_Reg (AXI4_DMA_Int_Reg_IFC);
    Reg #(S2MM_CURDESC_MSB)  rg_s2mm_curdesc_msb  <- mkReg (s2mm_curdesc_msb_default);
    Reg #(S2MM_TAILDESC)     rg_s2mm_taildesc     <- mkReg (s2mm_taildesc_default);
    Reg #(S2MM_TAILDESC_MSB) rg_s2mm_taildesc_msb <- mkReg (s2mm_taildesc_msb_default);
+   Reg #(CapPipe)           rg_s2mm_curdesc_cap  <- mkReg (nullCap);
 
    rule rl_reset (rg_state == RESET);
       if (rg_verbosity > 0) begin
@@ -89,6 +99,7 @@ module mkAXI4_DMA_Int_Reg (AXI4_DMA_Int_Reg_IFC);
       rg_mm2s_curdesc_msb  <= mm2s_curdesc_msb_default;
       rg_mm2s_taildesc     <= mm2s_taildesc_default;
       rg_mm2s_taildesc_msb <= mm2s_taildesc_msb_default;
+      rg_mm2s_curdesc_cap  <= nullCap;
 
       rg_s2mm_dmacr        <= s2mm_dmacr_default;
       rg_s2mm_dmasr        <= s2mm_dmasr_default;
@@ -96,6 +107,7 @@ module mkAXI4_DMA_Int_Reg (AXI4_DMA_Int_Reg_IFC);
       rg_s2mm_curdesc_msb  <= s2mm_curdesc_msb_default;
       rg_s2mm_taildesc     <= s2mm_taildesc_default;
       rg_s2mm_taildesc_msb <= s2mm_taildesc_msb_default;
+      rg_s2mm_curdesc_cap  <= nullCap;
    endrule
 
 
@@ -129,6 +141,11 @@ module mkAXI4_DMA_Int_Reg (AXI4_DMA_Int_Reg_IFC);
       rg_mm2s_taildesc_msb <= newval;
    endmethod
 
+   method        mm2s_curdesc_cap = rg_mm2s_curdesc_cap;
+   method Action mm2s_curdesc_cap_write (CapPipe newval) if (rg_state != RESET);
+      rg_mm2s_curdesc_cap <= newval;
+   endmethod
+
 
    method        s2mm_dmacr = rg_s2mm_dmacr;
    method Action s2mm_dmacr_write (S2MM_DMACR newval) if (rg_state != RESET);
@@ -158,6 +175,11 @@ module mkAXI4_DMA_Int_Reg (AXI4_DMA_Int_Reg_IFC);
    method        s2mm_taildesc_msb = rg_s2mm_taildesc_msb;
    method Action s2mm_taildesc_msb_write (S2MM_TAILDESC_MSB newval) if (rg_state != RESET);
       rg_s2mm_taildesc_msb <= newval;
+   endmethod
+
+   method        s2mm_curdesc_cap = rg_s2mm_curdesc_cap;
+   method Action s2mm_curdesc_cap_write (CapPipe newval) if (rg_state != RESET);
+      rg_s2mm_curdesc_cap <= newval;
    endmethod
 
 
@@ -236,6 +258,10 @@ module mkAXI4_DMA_Int_Reg (AXI4_DMA_Int_Reg_IFC);
             raw_val = (~(pack (mm2s_taildesc_msb_rw_mask)) & pack (rg_mm2s_taildesc_msb))
                         | ( (pack (mm2s_taildesc_msb_rw_mask)) & newval);
             rg_mm2s_taildesc_msb <= unpack (raw_val);
+         end
+         DMA_MM2S_CURDESC_CAP: begin
+            $display ("DMA Internal Register Module Error: should not try to write\n",
+                      "    capabilities using external_write");
          end
 
          DMA_S2MM_DMACR: begin

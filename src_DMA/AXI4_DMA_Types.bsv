@@ -50,18 +50,20 @@ typedef Bit #(32) DMA_BD_Word;
 
 //Reg_ refers to the Register Module
 typedef enum {
-   DMA_MM2S_DMACR          = 'h00,      // offset 00
-   DMA_MM2S_DMASR          = 'h01,      // offset 04
-   DMA_MM2S_CURDESC        = 'h02,      // offset 08
-   DMA_MM2S_CURDESC_MSB    = 'h03,      // offset 0c
-   DMA_MM2S_TAILDESC       = 'h04,      // offset 10
-   DMA_MM2S_TAILDESC_MSB   = 'h05,      // offset 14
-   DMA_S2MM_DMACR          = 'hc,       // offset 30
-   DMA_S2MM_DMASR          = 'hd,       // offset 34
-   DMA_S2MM_CURDESC        = 'he,       // offset 38
-   DMA_S2MM_CURDESC_MSB    = 'hf,       // offset 3c
-   DMA_S2MM_TAILDESC       = 'h10,      // offset 40
-   DMA_S2MM_TAILDESC_MSB   = 'h11       // offset 44
+   DMA_MM2S_DMACR          = 'h00,      // offset 0x00
+   DMA_MM2S_DMASR          = 'h01,      // offset 0x04
+   DMA_MM2S_CURDESC        = 'h02,      // offset 0x08
+   DMA_MM2S_CURDESC_MSB    = 'h03,      // offset 0x0c
+   DMA_MM2S_TAILDESC       = 'h04,      // offset 0x10
+   DMA_MM2S_TAILDESC_MSB   = 'h05,      // offset 0x14
+   DMA_MM2S_CURDESC_CAP    = 'h08,      // offset 0x20, length 0x10
+   DMA_S2MM_DMACR          = 'h0c,      // offset 0x30
+   DMA_S2MM_DMASR          = 'h0d,      // offset 0x34
+   DMA_S2MM_CURDESC        = 'h0e,      // offset 0x38
+   DMA_S2MM_CURDESC_MSB    = 'h0f,      // offset 0x3c
+   DMA_S2MM_TAILDESC       = 'h10,      // offset 0x40
+   DMA_S2MM_TAILDESC_MSB   = 'h11,      // offset 0x44
+   DMA_S2MM_CURDESC_CAP    = 'h14       // offset 0x50, length 0x10
 } DMA_Reg_Index deriving (Eq, Bits, FShow, Bounded);
 
 typedef Bit #(32) DMA_Reg_Word;

@@ -90,6 +90,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                            , Add #(m__, 4, TDiv#(sdata_, 8))
                            , Add #(n__, 32, sdata_)
                            , Add #(o__, addr_, 64)
+                           , Add #(p__, wuser_, 1)
                            );
 
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
