@@ -875,11 +875,12 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
       rg_state <= RESET;
    endmethod
 
-   method Action halt_to_idle;
-      if (rg_state != HALTED) begin
-         $display ("AXI DMA Copy Unit: ERROR: halted_to_idle when not halted1");
-      end
+   method Action halt_to_idle if (rg_state == HALTED);
       rg_state <= IDLE;
+      if (rg_verbosity > 1) begin
+         $display ("copy unit halt_to_idle");
+         $display ("    old state: ", fshow (rg_state));
+      end
    endmethod
 endmodule
 

@@ -183,6 +183,13 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
 
    // When the halt_to_idle signal is received, transition the modules
    // into their idle state
+   // bsc generates a conflict between this rule and dma_reg_rl_handle_write
+   // because of the call to dma_reg.halt_to_idle. bsc sees that both can write
+   // to rg_state, and so claims that they conflict. However, rg_state is
+   // only written in dma_reg_rl_handle_write when the register being written
+   // is one of the capability registers, in which case it cannot set
+   // get_halt_to_idle so this rule does not get executed
+   (* conflict_free="rl_halt_to_idle,dma_reg_rl_handle_write" *)
    rule rl_halt_to_idle (rg_state == HALTED
                          && dma_reg.get_halt_to_idle);
       if (rg_verbosity > 1) begin
@@ -349,7 +356,8 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    // Runs the cycle after receiving a SG interrupt, which happens when
    // the SG unit finishes writing a BD back to main memory.
    // Gets the new BD from memory, to be ready for the next transaction
-   rule rl_handle_sg_fetch_after_write_s2mm (rg_fetch_after_intr);
+   rule rl_handle_sg_fetch_after_write_s2mm (rg_state != HALTED
+                                             && rg_fetch_after_intr);
       DMA_Dir dir_local = S2MM;
       rg_fetch_after_intr <= False;
       // bsc is not able to disambiguate the type if we use pack (S2MM) so we introduce

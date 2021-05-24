@@ -619,13 +619,13 @@ module mkAXI4_DMA_Scatter_Gather
       rg_state <= DMA_RESET;
    endmethod
 
-   method Action halt_to_idle;
-      if (rg_state != DMA_HALTED) begin
-         $display ("AXI DMA Scatter Gather Unit: ERROR: halted_to_idle when not halted1");
-      end
+   method Action halt_to_idle if (rg_state == DMA_HALTED);
       rg_state <= DMA_IDLE;
+      if (rg_verbosity > 1) begin
+         $display ("sg module halt_to_idle");
+         $display ("    old state: ", fshow (rg_state));
+      end
    endmethod
-
 endmodule
 
 

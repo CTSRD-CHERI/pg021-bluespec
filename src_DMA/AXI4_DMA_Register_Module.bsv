@@ -358,11 +358,12 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
 
    method Bool get_halt_to_idle = pw_halt_to_idle;
 
-   method Action halt_to_idle;
-      if (rg_state != HALTED) begin
-         $display ("DMA Reg Unit: ERROR: halt_to_idle when not halted1");
-      end
+   method Action halt_to_idle if (rg_state == HALTED);
       rg_state <= RUNNING;
+      if (rg_verbosity > 1) begin
+         $display ("reg module halt_to_idle");
+         $display ("    old state: ", fshow (rg_state));
+      end
    endmethod
 endmodule
 
