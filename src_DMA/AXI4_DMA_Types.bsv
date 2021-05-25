@@ -23,6 +23,9 @@ typedef struct {
 } DMA_BD deriving (Bits, FShow);
 
 typedef TDiv #(SizeOf #(DMA_BD), SizeOf #(DMA_BD_Word)) DMA_Num_Words;
+// TODO find a better way of doing this?
+typedef 5 DMA_Num_App_Words;
+typedef 8 DMA_Num_Control_Words;
 
 typedef enum {
    MM2S,

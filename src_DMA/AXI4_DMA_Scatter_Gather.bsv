@@ -91,11 +91,13 @@ module mkAXI4_DMA_Scatter_Gather
                                          aruser_, ruser_))
           provisos (Add #(a__, SizeOf #(DMA_BD_Word), addr_),
                     Add #(b__, SizeOf #(DMA_BD_Word), data_),
-                    Add #(c__, 4, TDiv #(data_, 8))); // TODO this is required because of setting
+                    Add #(c__, 4, TDiv #(data_, 8)),  // TODO this is required because of setting
                                                      // the wstrb to zeroExtend (4'b1111).
                                                      // not sure why this is necessary, given that
                                                      // we already have the proviso that data_ is
                                                      // greater than 32, and 32/8 = 4
+                    Mul #(d__, 32, data_),
+                    Add #(e__, TLog#(TDiv#(data_, 32)), 4));
 
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
 
@@ -120,6 +122,7 @@ module mkAXI4_DMA_Scatter_Gather
 
    // This holds (the number of requests) - 1
    Reg #(AXI4_Len) rg_req_len <- mkRegU;
+   Reg #(AXI4_Size) rg_req_size <- mkRegU;
 
    // for reads, counts the number of responses received
    // for reads, this should be in sync with rg_bd_index
@@ -152,22 +155,41 @@ module mkAXI4_DMA_Scatter_Gather
    // and the other contains the application words.
    // app_words controls whether we read application words or DMA control words.
    function Tuple2 #(AXI4_ARFlit #(id_, addr_, aruser_), AXI4_Len) axi4_ar_burst_flit (Bit #(addr_) address, Bool app_words);
-      // TODO remove hardwired 5?
-      AXI4_Len len = app_words ? 5     // read only the app words
-                                 - 1   // burst size is arlen + 1
-                               : fromInteger (valueOf (DMA_Num_Words))
-                                 - 5   // don't read app words
-                                 - 1;  // burst size is arlen + 1
+      Bit #(4) num_words_to_read = app_words ? fromInteger (valueOf (DMA_Num_App_Words))
+                                             : fromInteger (valueOf (DMA_Num_Control_Words));
+      let bus_size_words = valueOf (TDiv #(data_, SizeOf #(DMA_BD_Word)));
+      let log_bus_size_words = valueOf (TLog #(TDiv #(data_, SizeOf #(DMA_BD_Word))));
 
+      // TODO this artifically limits the supported bus size to 128-bit
+      //      because of the truncate and because we impose a limit on
+      //      the number of words that can be read
+      Bit #(TLog #(TDiv #(data_, SizeOf #(DMA_BD_Word)))) num_words_bottom
+         = truncate (num_words_to_read);
+
+      let flit_num = ?;
+      let flit_size = ?;
+      if (log_bus_size_words != 0 // this is known at compile time, so if it is
+                                  // false then this if statement should generate
+                                  // no extra logic
+          && num_words_bottom == 0) begin
+         // the number of words we want evenly divides by the number of words
+         // we can get per flit, so we can send a bus-wide request
+         flit_num = num_words_to_read >> log_bus_size_words;
+         flit_size = fromInteger (valueOf (TDiv #(data_, 8)));
+      end else begin
+         // it is not possible to read the exact number of words we want using
+         // bus-wide flits, so default to 32-bit reads
+         flit_num = num_words_to_read;
+         flit_size = fromInteger (4);
+      end
+
+      AXI4_Len flit_len = unpack (zeroExtend (flit_num - 1));
 
       AXI4_ARFlit #(id_, addr_, aruser) ar_flit = AXI4_ARFlit {
          arid : base_id,
          araddr : address,
-         arlen : len,
-
-         // TODO read 8 bytes instead, when the data width permits it?
-         arsize : 4, // the size is 4 bytes, this gets transformed to the
-                      // actual value of 3'b010 within the type
+         arlen : flit_len,
+         arsize : flit_size,
 
          // The rest of these are just the same as the Flute core's default values
          arburst  : INCR,
@@ -178,9 +200,22 @@ module mkAXI4_DMA_Scatter_Gather
          arregion : 0,
          aruser   : 0
       };
-      return tuple2(ar_flit, len);
+      return tuple2(ar_flit, flit_len);
    endfunction
 
+
+   function Vector #(TDiv #(data_, 32), Bool) fn_size_to_active_reg (AXI4_Size size);
+      Vector #(TDiv #(data_, 32), Bool) ret_vec = replicate(False);
+      let size_bytes = fromAXI4_Size (size);
+      let size_words = size_bytes >> 2;
+      for (Integer i = 0; i < valueOf (TDiv #(data_, 32)); i = i+1) begin
+         if (fromInteger (i) < size_words) begin
+            ret_vec[i] = True;
+         end
+      end
+
+      return ret_vec;
+   endfunction
 
 
    rule rl_reset (rg_state == DMA_RESET);
@@ -203,6 +238,8 @@ module mkAXI4_DMA_Scatter_Gather
 
 
    // handle read responses and write them into the appropriate register
+   // when the read request size was greater than 32bits, write all the
+   // appropriate registers with the data from memory
    rule rl_handle_read_rsp ((rg_state == DMA_MAIN_READ_RSP_OUTSTANDING
                              || (rg_state == DMA_APP_READ_RSP_OUTSTANDING
                                  && read_app_words))
@@ -211,25 +248,39 @@ module mkAXI4_DMA_Scatter_Gather
       shim.slave.r.drop;
       rg_addr_bd_cur <= rg_addr_bd_incr;
       let rsp_count_new = rg_rsp_count;
+      DMA_BD_Index next_bd_index = unpack (pack (rg_bd_index)
+                                           + truncate (fromAXI4_Size (rg_req_size) >> 2));
 
       if (rflit.rresp == OKAY || rflit.rresp == EXOKAY) begin
-         // this handles the 32bit and 64bit cases
-         // in 32bit, we don't truncate anything because word size is 32 bits,
-         // in 64bit we truncate the upper or lower bits depending on the index
-         // Buffer descriptors must be 16 word aligned (pg021, page 20), so the bottom
-         // bits of the index also give us the address alignment
-         // TODO handle differently-sized cases?
-         DMA_BD_Word rdata_active = (pack (rg_bd_index))[0] == 1'b0 ? truncate (rflit.rdata)
-                                                                    : truncateLSB (rflit.rdata);
 
-         v_v_rg_bd[cur_dir][pack (rg_bd_index)] <= rdata_active;
-         rg_bd_index <= unpack (pack (rg_bd_index) + 1);
-         rsp_count_new = rg_rsp_count + 1;
-         if (rg_verbosity > 0) begin
-            $display ("updated register ", fshow(rg_bd_index), " with data : ", fshow(rdata_active));
-            $display ("    original data: ", fshow (rflit.rdata));
-            $display ("    cur_dir: ", fshow (cur_dir));
+         // TODO this section has been tested with 64-bit and works
+         //      it has been written such that it should work with any bus size
+         //      which is a multiple of 32, but has not been tested in non-64-bit
+         //      busses
+         Bit #(TLog #(data_)) base_offset
+            = pack (rg_bd_index)[valueOf (TSub #(TLog #(TDiv #(data_, SizeOf #(DMA_BD_Word))), 1)):0] << 5;
+
+         let active = fn_size_to_active_reg (rg_req_size);
+         for (Integer i = 0; i < valueOf (TDiv #(data_, 32)); i = i+1) begin
+            if (active[i]) begin
+               Bit #(TLog #(data_)) offset
+                  = base_offset + fromInteger (i) * 32;
+               DMA_BD_Word val_to_write = unpack (rflit.rdata[offset+31:offset]);
+               DMA_BD_Index reg_to_write = unpack (pack (rg_bd_index) + fromInteger (i));
+               v_v_rg_bd[cur_dir][pack (reg_to_write)] <= val_to_write;
+               if (rg_verbosity > 0) begin
+                  $display ("AXI DMA SG Register Write");
+                  $display ("    register: ", fshow (reg_to_write));
+                  $display ("    value: ", fshow (val_to_write));
+               end
+            end
          end
+         if (rg_verbosity > 1) begin
+            $display ("    raw flit: ", fshow (rflit));
+         end
+         rsp_count_new = rg_rsp_count + 1;
+         rg_bd_index <= next_bd_index;
+
          // user field should be empty for now
          // TODO handle user field when capabilities are required
       end
@@ -247,8 +298,7 @@ module mkAXI4_DMA_Scatter_Gather
       end
 
       if (rflit.rlast) begin
-         if (read_app_words && rg_bd_index == DMA_STATUS) begin
-            // DMA_STATUS is the last non-app word
+         if (read_app_words && next_bd_index == DMA_APP0) begin
             // we've finished reading all non-app words and now we need
             // to read the app words
 
@@ -265,6 +315,7 @@ module mkAXI4_DMA_Scatter_Gather
                $display ("    flit: ", fshow(arflit));
             end
             rg_req_len <= len;
+            rg_req_size <= arflit.arsize;
             rsp_count_new = 0;
             rg_state <= DMA_APP_READ_RSP_OUTSTANDING;
          end else begin
@@ -289,8 +340,11 @@ module mkAXI4_DMA_Scatter_Gather
 
             // check that we wrote the last index when rlast is true
             // This checks that our requests were the right size
-            if ((read_app_words && rg_bd_index != maxBound)
-                || (!read_app_words && rg_bd_index != DMA_STATUS)) begin
+            // TODO a more hardware-efficient way of doing this would probably
+            // be to check that next_bd_index != (DMA_APP4 + 1)
+            //              and next_bd_index != DMA_APP0
+            if ((read_app_words && pack (next_bd_index) <= pack (DMA_APP4))
+                || (!read_app_words && pack (next_bd_index) <= pack (DMA_STATUS))) begin
                DMA_BD_Index expected_max = read_app_words ? maxBound : DMA_STATUS;
                $display ("AXI4 DMA SG: index is not the expected value at end of transfer");
                $display ("    index: ", fshow (rg_bd_index));
@@ -360,6 +414,7 @@ module mkAXI4_DMA_Scatter_Gather
       rg_bd_index <= unpack (pack (rg_bd_index) + 1);
       rg_addr_bd_cur <= rg_addr_bd_incr;
       rg_req_len <= zeroExtend (len);
+      rg_req_size <= awflit.awsize;
       rg_rsp_count <= 1; // we send a wflit in this rule
       rg_received_err_rsp <= False;
 
@@ -537,6 +592,7 @@ module mkAXI4_DMA_Scatter_Gather
       rg_addr_bd_cur <= start_addr;
       rg_bd_index <= minBound;
       rg_req_len <= len;
+      rg_req_size <= arflit.arsize;
       rg_rsp_count <= 0;
       rg_received_err_rsp <= False;
 
@@ -588,6 +644,7 @@ module mkAXI4_DMA_Scatter_Gather
       rg_addr_bd_cur <= addr;
       rg_bd_index <= minBound;
       rg_req_len <= len;
+      rg_req_size <= arflit.arsize;
       rg_rsp_count <= 0;
       rg_received_err_rsp <= False;
 
