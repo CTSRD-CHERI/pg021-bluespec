@@ -24,29 +24,78 @@ typedef struct {
 
 typedef TDiv #(SizeOf #(DMA_BD), SizeOf #(DMA_BD_Word)) DMA_Num_Words;
 // TODO find a better way of doing this?
+// number of words holding capabilities in 32-bit and 64-bit modes
+typedef 4 DMA_Num_Cap_Words_32;
+typedef 8 DMA_Num_Cap_Words_64;
+
+`ifdef RV64
+typedef DMA_Num_Cap_Words_64 DMA_Num_Cap_Words;
+`else
+typedef DMA_Num_Cap_Words_32 DMA_Num_Cap_Words;
+`endif
+
+typedef 2 DMA_Num_Control_Words;
 typedef 5 DMA_Num_App_Words;
-typedef 8 DMA_Num_Control_Words;
+typedef 1 DMA_Num_Res_Words;
+typedef TAdd #(TAdd #(DMA_Num_Control_Words, DMA_Num_App_Words), DMA_Num_Res_Words)
+   DMA_Num_Control_App_Words;
 
 typedef enum {
    MM2S,
    S2MM
 } DMA_Dir deriving (Bits, Eq, FShow);
 
+
+// Modified BD setup, to allow enough contiguous space for capabilities
+// Adding an extra reserved word after DMA_APP4 makes the BD an even 16 bytes
+// and means that fetching the control + status + app words can be done in
+// bursts with larger sizes (rather than 32-bit bursts) while still reading
+// only words dedicated for the DMA engine.
+
+`ifdef RV64
+// 64-bit setup
 typedef enum {
-   DMA_NXTDESC,
-   DMA_NXTDESC_MSB,
-   DMA_BUFFER_ADDRESS,
-   DMA_BUFFER_ADDRESS_MSB,
-   DMA_RESERVED0,
-   DMA_RESERVED1,
+   DMA_NXTDESC_0,
+   DMA_NXTDESC_1,
+   DMA_NXTDESC_2,
+   DMA_NXTDESC_3,
+   DMA_BUFFER_ADDRESS_0,
+   DMA_BUFFER_ADDRESS_1,
+   DMA_BUFFER_ADDRESS_2,
+   DMA_BUFFER_ADDRESS_3,
+
    DMA_CONTROL,
    DMA_STATUS,
    DMA_APP0,
    DMA_APP1,
    DMA_APP2,
    DMA_APP3,
-   DMA_APP4
-} DMA_BD_Index deriving (Eq, Bits, FShow, Bounded);
+   DMA_APP4,
+   DMA_RESERVED_4
+} DMA_BD_Index deriving (Bits, Eq, FShow, Bounded);
+`else
+// 32-bit setup
+typedef enum {
+   DMA_NXTDESC_0,
+   DMA_NXTDESC_1,
+   DMA_BUFFER_ADDRESS_0,
+   DMA_BUFFER_ADDRESS_1,
+   DMA_RESERVED_0,
+   DMA_RESERVED_1,
+   DMA_RESERVED_2,
+   DMA_RESERVED_3,
+
+   DMA_CONTROL,
+   DMA_STATUS,
+   DMA_APP0,
+   DMA_APP1,
+   DMA_APP2,
+   DMA_APP3,
+   DMA_APP4,
+   DMA_RESERVED_4
+} DMA_BD_Index deriving (Bits, Eq, FShow, Bounded);
+`endif
+
 
 // This is defined in the Xilinx specification
 typedef Bit #(32) DMA_BD_Word;

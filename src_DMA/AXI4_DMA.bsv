@@ -239,8 +239,8 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
          // TODO handle 32bit addresses
          Bit #(addr_) address = rg_mm2s_first_fetch ? truncate ({pack (dma_int_reg.mm2s_curdesc_msb)
                                                       ,pack (dma_int_reg.mm2s_curdesc)})
-                                                    : truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_MSB)]
-                                                      ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC)]});
+                                                    : truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)]
+                                                      ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)]});
          dma_int_reg.mm2s_curdesc_write (unpack (truncate (address)));
          dma_int_reg.mm2s_curdesc_msb_write (unpack (truncateLSB (address)));
          if (rg_verbosity > 0) begin
@@ -257,8 +257,8 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
          // TODO handle 32bit addresses
          Bit #(addr_) address = rg_s2mm_first_fetch ? truncate ({pack (dma_int_reg.s2mm_curdesc_msb)
                                                       ,pack (dma_int_reg.s2mm_curdesc)})
-                                                    : truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_MSB)]
-                                                      ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC)]});
+                                                    : truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)]
+                                                      ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)]});
          dma_int_reg.s2mm_curdesc_write (unpack (truncate (address)));
          dma_int_reg.s2mm_curdesc_msb_write (unpack (truncateLSB (address)));
          if (rg_verbosity > 0) begin
@@ -362,8 +362,8 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
       rg_fetch_after_intr <= False;
       // bsc is not able to disambiguate the type if we use pack (S2MM) so we introduce
       // dir_local instead
-      Bit #(addr_) address = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_MSB)]
-                                       ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC)]});
+      Bit #(addr_) address = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)]
+                                       ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)]});
       dma_int_reg.s2mm_curdesc_write (unpack (truncate (address) & pack (s2mm_curdesc_rw_mask_halted)));
       dma_int_reg.s2mm_curdesc_msb_write (unpack (truncateLSB (address) & pack (s2mm_curdesc_rw_mask)));
       axi_sg.bd_read_from_mem (S2MM, address);

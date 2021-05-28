@@ -97,7 +97,7 @@ module mkAXI4_DMA_Scatter_Gather
                                                      // we already have the proviso that data_ is
                                                      // greater than 32, and 32/8 = 4
                     Mul #(d__, 32, data_),
-                    Add #(e__, TLog#(TDiv#(data_, 32)), 4));
+                    Add #(e__, TLog#(TDiv#(data_, 32)), 5));
 
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
 
@@ -154,9 +154,44 @@ module mkAXI4_DMA_Scatter_Gather
    // At 32bits, two bursts are used. One burst contains the DMA control words,
    // and the other contains the application words.
    // app_words controls whether we read application words or DMA control words.
-   function Tuple2 #(AXI4_ARFlit #(id_, addr_, aruser_), AXI4_Len) axi4_ar_burst_flit (Bit #(addr_) address, Bool app_words);
-      Bit #(4) num_words_to_read = app_words ? fromInteger (valueOf (DMA_Num_App_Words))
-                                             : fromInteger (valueOf (DMA_Num_Control_Words));
+   // Cases:
+   //    cap_words == True, app_words == True
+   //       For 64-bit, fetch the entire buffer descriptor in 1 burst, because
+   //       we have enough bandwidth for it
+   //       For 32-bit, fetch only the capability words (ie treat as though
+   //       app_words is false
+   //    cap_words == True, app_words == False
+   //       Fetch only the capability words
+   //       For 32-bit, this will fetch 16 bytes
+   //       For 64-bit, this will fetch 32 bytes
+   //    cap_words == False, app_words == True
+   //       Fetch both the application words (DMA_APP0 .. DMA_APP4) _and_ the
+   //       control words (DMA_BD_CONTROL and DMA_BD_STATUS)
+   //    cap_words == False, app_words == False
+   //       Fetch only the control words (DMA_BD_CONTROL and DMA_BD_STATUS)
+   function Tuple2 #(AXI4_ARFlit #(id_, addr_, aruser_), AXI4_Len) axi4_ar_burst_flit (Bit #(addr_) address, Bool cap_words, Bool app_words);
+      Bit #(5) num_words_to_read = ?;
+      if (cap_words && app_words) begin
+         if (valueOf (data_) >= 32) begin
+            // if we have a bus that is at least 64 bits, then we can fetch the
+            // entire buffer descriptor in one max-length (8-flit) burst
+            num_words_to_read = fromInteger (valueOf (DMA_Num_Cap_Words)
+                                             + valueOf (DMA_Num_Control_App_Words));
+         end else begin
+            // if our bus is not at least 64 bits, then we have to issue
+            // multiple bursts. The first one will read only the capability
+            // words
+            num_words_to_read = fromInteger (valueOf (DMA_Num_Cap_Words));
+         end
+      end else if (cap_words && !app_words) begin
+         num_words_to_read = fromInteger (valueOf (DMA_Num_Cap_Words));
+      end else if (!cap_words && app_words) begin
+         num_words_to_read = fromInteger (valueOf (DMA_Num_Control_App_Words));
+      end else if (!cap_words && !app_words) begin
+         num_words_to_read = fromInteger (valueOf (DMA_Num_Control_Words));
+      end
+
+
       let bus_size_words = valueOf (TDiv #(data_, SizeOf #(DMA_BD_Word)));
       let log_bus_size_words = valueOf (TLog #(TDiv #(data_, SizeOf #(DMA_BD_Word))));
 
@@ -250,6 +285,9 @@ module mkAXI4_DMA_Scatter_Gather
       let rsp_count_new = rg_rsp_count;
       DMA_BD_Index next_bd_index = unpack (pack (rg_bd_index)
                                            + truncate (fromAXI4_Size (rg_req_size) >> 2));
+      DMA_BD_Index latest_bd_index = unpack (pack (rg_bd_index) - 1
+                                             + truncate (fromAXI4_Size (rg_req_size) >> 2)
+                                             );
 
       if (rflit.rresp == OKAY || rflit.rresp == EXOKAY) begin
 
@@ -298,6 +336,7 @@ module mkAXI4_DMA_Scatter_Gather
       end
 
       if (rflit.rlast) begin
+         // TODO change this to latest_bd_index and DMA_STATUS?
          if (read_app_words && next_bd_index == DMA_APP0) begin
             // we've finished reading all non-app words and now we need
             // to read the app words
@@ -308,7 +347,7 @@ module mkAXI4_DMA_Scatter_Gather
                          "    main words");
             end
 
-            match {.arflit, .len} = axi4_ar_burst_flit (rg_addr_bd_incr, True);
+            match {.arflit, .len} = axi4_ar_burst_flit (rg_addr_bd_incr, False, True);
             shim.slave.ar.put (arflit);
             if (rg_verbosity > 0) begin
                $display ("AXI4 SG Unit: DMA sent AR flit to read app words");
@@ -338,16 +377,21 @@ module mkAXI4_DMA_Scatter_Gather
                end
             end
 
+            // Maximum expected values for latest_bd_index
+            // Explicitly set here to avoid type ambiguity
+            DMA_BD_Index app_max = rg_req_size > toAXI4_Size (4).Valid ? DMA_RESERVED_4
+                                                                       : DMA_APP4;
+            DMA_BD_Index ctrl_max = DMA_STATUS;
             // check that we wrote the last index when rlast is true
             // This checks that our requests were the right size
             // TODO a more hardware-efficient way of doing this would probably
             // be to check that next_bd_index != (DMA_APP4 + 1)
             //              and next_bd_index != DMA_APP0
-            if ((read_app_words && pack (next_bd_index) <= pack (DMA_APP4))
-                || (!read_app_words && pack (next_bd_index) <= pack (DMA_STATUS))) begin
-               DMA_BD_Index expected_max = read_app_words ? maxBound : DMA_STATUS;
+            if ((read_app_words && pack (latest_bd_index) != pack (app_max))
+                || (!read_app_words && pack (latest_bd_index) != pack (ctrl_max))) begin
+               DMA_BD_Index expected_max = read_app_words ? maxBound : app_max;
                $display ("AXI4 DMA SG: index is not the expected value at end of transfer");
-               $display ("    index: ", fshow (rg_bd_index));
+               $display ("    index: ", fshow (latest_bd_index));
                $display ("    expected: ", fshow (expected_max));
             end
          end
@@ -581,7 +625,7 @@ module mkAXI4_DMA_Scatter_Gather
 
       // bus transaction
       // don't read app words yet
-      match {.arflit, .len} = axi4_ar_burst_flit (start_addr, False);
+      match {.arflit, .len} = axi4_ar_burst_flit (start_addr, True, True);
       shim.slave.ar.put (arflit);
       if (rg_verbosity > 0) begin
          $display ("AXI4 SG Unit: DMA sent AR flit: ", fshow(arflit));
@@ -632,11 +676,12 @@ module mkAXI4_DMA_Scatter_Gather
          $display ("AXI4 SG Unit: requested fetch of next buffer descriptor");
       end
 
-      Bit #(addr_) addr = zeroExtend (v_v_rg_bd[pack (dir)][pack (DMA_NXTDESC)]);
+      DMA_BD_Index nxtdesc_0_idx = DMA_NXTDESC_0;
+      Bit #(addr_) addr = zeroExtend (v_v_rg_bd[pack (dir)][pack (nxtdesc_0_idx)]);
 
       // bus transaction
       // don't read app words yet
-      match {.arflit, .len} = axi4_ar_burst_flit (addr, False);
+      match {.arflit, .len} = axi4_ar_burst_flit (addr, True, True);
       shim.slave.ar.put (arflit);
 
       // internal bookkeeping

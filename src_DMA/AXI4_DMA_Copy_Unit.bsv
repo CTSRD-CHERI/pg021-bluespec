@@ -346,7 +346,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
       if (rg_verbosity > 0) begin
          $display ("AXI4 DMA Copy Unit starting S2MM transfer");
       end
-      rg_addr_next_byte <= zeroExtend (pack (v_v_rg_bd[pack (S2MM)][pack (DMA_BUFFER_ADDRESS)]));
+      rg_addr_next_byte <= zeroExtend (pack (v_v_rg_bd[pack (S2MM)][pack (DMA_BUFFER_ADDRESS_0)]));
       rg_buf_len <= 0;
       rg_buf_cur <= 0;
       crg_dir[0] <= S2MM;
@@ -843,7 +843,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
          $display ("DMA Copy Unit received MM2S trigger");
       end
       crg_dir[0] <= MM2S;
-      rg_addr_next_byte <= zeroExtend (pack (v_v_rg_bd[pack (MM2S)][pack (DMA_BUFFER_ADDRESS)]));
+      rg_addr_next_byte <= zeroExtend (pack (v_v_rg_bd[pack (MM2S)][pack (DMA_BUFFER_ADDRESS_0)]));
       rg_buf_cur <= 0;
       rg_buf_len <= zeroExtend ((pack (v_v_rg_bd[pack (MM2S)][pack (DMA_CONTROL)]))[25:0]);
       rg_stream_out_count <= 0;
