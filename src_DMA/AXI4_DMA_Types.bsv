@@ -100,6 +100,12 @@ typedef enum {
 // This is defined in the Xilinx specification
 typedef Bit #(32) DMA_BD_Word;
 
+// tagged word to keep track of CHERI validity tags
+typedef struct {
+   DMA_BD_Word word;
+   Bool tag;
+} DMA_BD_TagWord deriving (Bits, Eq, FShow);
+
 //Reg_ refers to the Register Module
 typedef enum {
    DMA_MM2S_DMACR          = 'h00,      // offset 0x00

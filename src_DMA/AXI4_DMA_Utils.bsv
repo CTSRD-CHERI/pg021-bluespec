@@ -9,6 +9,9 @@ import AXI4Stream_Types :: *;
 import AXI4Stream_Utils :: *;
 import SourceSink :: *;
 
+// local imports
+import AXI4_DMA_Types :: *;
+
 interface AXI4Stream_Data_Source #(numeric type strm_id_
                              ,numeric type sdata_
                              ,numeric type sdest_
@@ -246,5 +249,9 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
       axi4s_s_data_shim.clear;
    endmethod
 endmodule
+
+function DMA_BD_TagWord fn_to_untagged_tagword (DMA_BD_Word word)
+   = DMA_BD_TagWord { word: word, tag: False };
+
 
 endpackage

@@ -91,6 +91,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                            , Add #(n__, 32, sdata_)
                            , Add #(o__, addr_, 64)
                            , Add #(p__, wuser_, 1)
+                           , Add #(q__, 1, ruser_)
                            );
 
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
@@ -104,7 +105,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
 
    // A 2D Vector of registers, which contain the MM2S and S2MM Buffer Descriptors
    // that are currently being worked on
-   Vector #(TExp #(SizeOf #(DMA_Dir)), Vector #(TExp #(SizeOf #(DMA_BD_Index)), Reg #(DMA_BD_Word))) v_v_rg_bd;
+   Vector #(TExp #(SizeOf #(DMA_Dir)), Vector #(TExp #(SizeOf #(DMA_BD_Index)), Reg #(DMA_BD_TagWord))) v_v_rg_bd;
    v_v_rg_bd <- replicateM (replicateM (mkRegU));
 
    AXI4_DMA_Int_Reg_IFC dma_int_reg <- mkAXI4_DMA_Int_Reg;
@@ -239,8 +240,8 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
          // TODO handle 32bit addresses
          Bit #(addr_) address = rg_mm2s_first_fetch ? truncate ({pack (dma_int_reg.mm2s_curdesc_msb)
                                                       ,pack (dma_int_reg.mm2s_curdesc)})
-                                                    : truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)]
-                                                      ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)]});
+                                                    : truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word
+                                                      ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word});
          dma_int_reg.mm2s_curdesc_write (unpack (truncate (address)));
          dma_int_reg.mm2s_curdesc_msb_write (unpack (truncateLSB (address)));
          if (rg_verbosity > 0) begin
@@ -257,8 +258,8 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
          // TODO handle 32bit addresses
          Bit #(addr_) address = rg_s2mm_first_fetch ? truncate ({pack (dma_int_reg.s2mm_curdesc_msb)
                                                       ,pack (dma_int_reg.s2mm_curdesc)})
-                                                    : truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)]
-                                                      ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)]});
+                                                    : truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word
+                                                      ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word});
          dma_int_reg.s2mm_curdesc_write (unpack (truncate (address)));
          dma_int_reg.s2mm_curdesc_msb_write (unpack (truncateLSB (address)));
          if (rg_verbosity > 0) begin
@@ -362,8 +363,8 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
       rg_fetch_after_intr <= False;
       // bsc is not able to disambiguate the type if we use pack (S2MM) so we introduce
       // dir_local instead
-      Bit #(addr_) address = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)]
-                                       ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)]});
+      Bit #(addr_) address = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word
+                                       ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word});
       dma_int_reg.s2mm_curdesc_write (unpack (truncate (address) & pack (s2mm_curdesc_rw_mask_halted)));
       dma_int_reg.s2mm_curdesc_msb_write (unpack (truncateLSB (address) & pack (s2mm_curdesc_rw_mask)));
       axi_sg.bd_read_from_mem (S2MM, address);

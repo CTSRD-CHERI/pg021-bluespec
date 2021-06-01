@@ -15,6 +15,7 @@ import SourceSink :: *;
 // Local imports
 import AXI4_DMA_Types :: *;
 import AXI4_DMA_Internal_Reg_Module :: *;
+import AXI4_DMA_Utils :: *;
 
 interface AXI4_DMA_Copy_Unit_IFC #(numeric type id_
                                   ,numeric type addr_
@@ -65,7 +66,7 @@ typedef enum {
 // It reads and writes the configuration registers that are passed in
 // at instantiation.
 // TODO for now this assumes that all buffers start at addresses that are at least 32-bit aligned
-module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_v_rg_bd,
+module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) v_v_rg_bd,
                               AXI4_DMA_Int_Reg_IFC dma_int_reg)
                             (AXI4_DMA_Copy_Unit_IFC #(id_, addr_, data_,
                                                       awuser_, wuser_, buser_,
@@ -307,7 +308,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
       axi4s_m_meta_shim.master.drop;
 
       v_v_rg_bd[pack (S2MM)][pack (DMA_APP0) + zeroExtend (rg_meta_counter)]
-         <= truncate (axi4s_m_meta_shim.master.peek.tdata);
+         <= fn_to_untagged_tagword (truncate (axi4s_m_meta_shim.master.peek.tdata));
 
       // We start the counter at zero for clarity above, which means that
       // it is actually one lower than the real number of words received.
@@ -323,8 +324,9 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
          // can't just set it to the value received in the status stream, as the one in
          // the status stream is a non-overflowing counter with a lower maximum than the longest
          // possible DMA transfer
-         v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)] <= v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)]
-                                                    | {1'b1, 3'b0, 1'b1, 1'b1, 26'b0};
+         v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)] <=
+            fn_to_untagged_tagword (v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)].word
+                                    | {1'b1, 3'b0, 1'b1, 1'b1, 26'b0});
          if (!axi4s_m_meta_shim.master.peek.tlast) begin
             $display ("AXI4 DMA Copy Unit: Error: Received more than 6 metadata words");
          end
@@ -346,7 +348,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
       if (rg_verbosity > 0) begin
          $display ("AXI4 DMA Copy Unit starting S2MM transfer");
       end
-      rg_addr_next_byte <= zeroExtend (pack (v_v_rg_bd[pack (S2MM)][pack (DMA_BUFFER_ADDRESS_0)]));
+      rg_addr_next_byte <= zeroExtend (pack (v_v_rg_bd[pack (S2MM)][pack (DMA_BUFFER_ADDRESS_0)].word));
       rg_buf_len <= 0;
       rg_buf_cur <= 0;
       crg_dir[0] <= S2MM;
@@ -384,12 +386,12 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
       if (axi4s_m_data_shim.master.peek.tlast) begin
          // This is the last flit of data
          rg_state <= WAIT_FOR_FINAL_DEQ;
-         if (rg_buf_len + 4 != zeroExtend (v_v_rg_bd[pack (S2MM)][pack (DMA_APP4)][15:0])) begin
+         if (rg_buf_len + 4 != zeroExtend (v_v_rg_bd[pack (S2MM)][pack (DMA_APP4)].word[15:0])) begin
             $display ("AXI4 DMA Copy Unit: Error: Received the wrong number of data bytes");
             // TODO this assumes 32bit transfers
             $display ("    Real bytes received: ", fshow (rg_buf_len + 4));
             $display ("    Number of bytes that should have been received: ",
-                      fshow (v_v_rg_bd[pack (S2MM)][pack (DMA_APP4)][15:0]));
+                      fshow (v_v_rg_bd[pack (S2MM)][pack (DMA_APP4)].word[15:0]));
          end
          if (rg_verbosity > 0) begin
             $display ("           received tlast");
@@ -514,11 +516,11 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
          end
          rg_state <= IDLE;
          rw_end_trigger.wset (S2MM);
-         v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)] <= v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)]
-                                                    | {1'b1, 0};
+         let val_to_write = fn_to_untagged_tagword (v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)].word
+                                                    | {1'b1, 0});
+         v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)] <= val_to_write;
          if (rg_verbosity > 1) begin
-            $display ("DMA Copy Unit: Set S2MM Status to ", fshow (v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)]
-                                                    | {1'b1, 0}));
+            $display ("DMA Copy Unit: Set S2MM Status to ", fshow (val_to_write));
          end
          rg_bresp_last <= False;
       end
@@ -536,7 +538,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    rule rl_mm2s_meta_transfer (rg_state == META_SEND_MM2S
                                && axi4s_s_meta_shim.slave.canPut);
       AXI4Stream_Flit #(sid_, sdata_, sdest_, suser_) flit = AXI4Stream_Flit {
-         tdata: zeroExtend (v_v_rg_bd[pack (MM2S)][pack (DMA_APP0) + zeroExtend (rg_meta_counter)]),
+         tdata: zeroExtend (v_v_rg_bd[pack (MM2S)][pack (DMA_APP0) + zeroExtend (rg_meta_counter)].word),
          tstrb: ~0,
          tkeep: ~0,
          tlast: rg_meta_counter == 4, // See below where we check if it is 4
@@ -610,7 +612,8 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
                               && rg_stream_out_count >= rg_buf_len);
       $display ("DMA Copy Unit: finished stream transfer, going to IDLE");
       // Set BD status complete and transferred bytes fields
-      v_v_rg_bd[pack (MM2S)][pack (DMA_STATUS)] <= {1'b1, 5'b0, rg_buf_len};
+      v_v_rg_bd[pack (MM2S)][pack (DMA_STATUS)] <=
+         fn_to_untagged_tagword ({1'b1, 5'b0, rg_buf_len});
 
       rg_state <= IDLE;
       rw_end_trigger.wset (MM2S);
@@ -843,9 +846,9 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
          $display ("DMA Copy Unit received MM2S trigger");
       end
       crg_dir[0] <= MM2S;
-      rg_addr_next_byte <= zeroExtend (pack (v_v_rg_bd[pack (MM2S)][pack (DMA_BUFFER_ADDRESS_0)]));
+      rg_addr_next_byte <= zeroExtend (pack (v_v_rg_bd[pack (MM2S)][pack (DMA_BUFFER_ADDRESS_0)].word));
       rg_buf_cur <= 0;
-      rg_buf_len <= zeroExtend ((pack (v_v_rg_bd[pack (MM2S)][pack (DMA_CONTROL)]))[25:0]);
+      rg_buf_len <= zeroExtend ((pack (v_v_rg_bd[pack (MM2S)][pack (DMA_CONTROL)].word))[25:0]);
       rg_stream_out_count <= 0;
       rg_state <= META_SEND_MM2S;
 

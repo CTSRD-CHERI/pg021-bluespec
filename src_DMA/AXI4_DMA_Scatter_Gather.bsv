@@ -85,7 +85,7 @@ typedef enum {
 //  address registers. However, I'm not sure how to write the code for this,
 //  so here it is assumed that the addresses are >= the DMA word size
 module mkAXI4_DMA_Scatter_Gather
-         #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_Word))) v_v_rg_bd)
+         #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) v_v_rg_bd)
           (AXI4_DMA_Scatter_Gather_IFC #(id_, addr_, data_,
                                          awuser_, wuser_, buser_,
                                          aruser_, ruser_))
@@ -97,7 +97,8 @@ module mkAXI4_DMA_Scatter_Gather
                                                      // we already have the proviso that data_ is
                                                      // greater than 32, and 32/8 = 4
                     Mul #(d__, 32, data_),
-                    Add #(e__, TLog#(TDiv#(data_, 32)), 5));
+                    Add #(e__, TLog#(TDiv#(data_, 32)), 5),
+                    Add #(f__, 1, ruser_));
 
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
 
@@ -301,9 +302,13 @@ module mkAXI4_DMA_Scatter_Gather
          let active = fn_size_to_active_reg (rg_req_size);
          for (Integer i = 0; i < valueOf (TDiv #(data_, 32)); i = i+1) begin
             if (active[i]) begin
-               Bit #(TLog #(data_)) offset
-                  = base_offset + fromInteger (i) * 32;
-               DMA_BD_Word val_to_write = unpack (rflit.rdata[offset+31:offset]);
+               Bit #(TLog #(data_)) offset = base_offset + fromInteger (i) * 32;
+               DMA_BD_Word word_to_write = unpack (rflit.rdata[offset+31:offset]);
+               // TODO multiple user bits?
+               Bool tag_to_write = rflit.ruser == signExtend (1'b1);
+
+               DMA_BD_TagWord val_to_write = DMA_BD_TagWord { word: word_to_write
+                                                            , tag: tag_to_write};
                DMA_BD_Index reg_to_write = unpack (pack (rg_bd_index) + fromInteger (i));
                v_v_rg_bd[cur_dir][pack (reg_to_write)] <= val_to_write;
                if (rg_verbosity > 0) begin
@@ -435,14 +440,15 @@ module mkAXI4_DMA_Scatter_Gather
          awuser   : 0
       };
       shim.slave.aw.put(awflit);
+      $display ("aw put: ", fshow (awflit));
 
       // this handles the 32bit and 64bit cases
       // TODO handle other cases?
       Bool write_lower = (pack (rg_bd_index))[0] == 1'b0;
       //Bit #(data_) val_to_write = write_lower ? zeroExtend (v_v_rg_bd[cur_dir][pack (rg_bd_index)])
       //                                        : reverseBits (zeroExtend (reverseBits (v_v_rg_bd[cur_dir][pack (rg_bd_index)])));
-      Bit #(data_) val_to_write = write_lower ? {0, v_v_rg_bd[cur_dir][pack (rg_bd_index)]}
-                                              : {v_v_rg_bd[cur_dir][pack (rg_bd_index)], 0};
+      Bit #(data_) val_to_write = write_lower ? {0, v_v_rg_bd[cur_dir][pack (rg_bd_index)].word}
+                                              : {v_v_rg_bd[cur_dir][pack (rg_bd_index)].word, 0};
       Bit #(TDiv #(data_, 8)) strb = write_lower ? {0, 4'b1111}
                                                  // TODO this doesn't work for
                                                  // strb requiring >8 bits
@@ -481,8 +487,8 @@ module mkAXI4_DMA_Scatter_Gather
       // TODO handle other cases?
       // TODO handle writing more data when the data bus supports it?
       Bool write_lower = (pack (rg_bd_index))[0] == 1'b0;
-      Bit #(data_) val_to_write = write_lower ? {0, v_v_rg_bd[cur_dir][pack (rg_bd_index)]}
-                                              : {v_v_rg_bd[cur_dir][pack (rg_bd_index)], 0};
+      Bit #(data_) val_to_write = write_lower ? {0, v_v_rg_bd[cur_dir][pack (rg_bd_index)].word}
+                                              : {v_v_rg_bd[cur_dir][pack (rg_bd_index)].word, 0};
       Bit #(TDiv #(data_, 8)) strb = write_lower ? {0, 4'b1111}
                                                  // TODO this doesn't work for
                                                  // strb requiring >8 bits
@@ -677,7 +683,7 @@ module mkAXI4_DMA_Scatter_Gather
       end
 
       DMA_BD_Index nxtdesc_0_idx = DMA_NXTDESC_0;
-      Bit #(addr_) addr = zeroExtend (v_v_rg_bd[pack (dir)][pack (nxtdesc_0_idx)]);
+      Bit #(addr_) addr = zeroExtend (v_v_rg_bd[pack (dir)][pack (nxtdesc_0_idx)].word);
 
       // bus transaction
       // don't read app words yet
