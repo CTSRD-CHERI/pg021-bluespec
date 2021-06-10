@@ -73,6 +73,7 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
                  aruser_, ruser_) serialiser <- mkSerialiser (shim.master);
 
    Reg #(Reg_State) rg_state <- mkReg (RESET);
+   Reg #(Reg_State) rg_write2_state <- mkRegU;
 
    // aggregate the capability that is currently being written
    Reg #(CapMem) rg_cap <- mkReg (nullCap);
@@ -149,6 +150,7 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
             // TODO this assumes 64-bit-wide bus
             rg_cap <= zeroExtend (wflit.wdata);
             rg_cap_valid <= zeroExtend (wflit.wuser);
+            rg_write2_state <= rg_state;
             rg_state <= WAIT_SECOND_WRITE;
          end else begin
             dma_int_reg.external_write (idx, newval);
@@ -286,8 +288,9 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
          $display ("wrote capability into rg_cap");
          $display ("    new cap: ", fshow (newCap));
          $display ("    index: ", fshow (idx));
+         $display ("    new state: ", fshow (rg_write2_state));
       end
-      rg_state <= RUNNING;
+      rg_state <= rg_write2_state;
    endrule
 
    // behaviour: only accept single-flit reads where the size is DMA_Reg_Word-sized
