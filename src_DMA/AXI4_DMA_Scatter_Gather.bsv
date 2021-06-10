@@ -47,10 +47,14 @@ interface AXI4_DMA_Scatter_Gather_IFC#(numeric type id_,
    (* always_ready *)
    method Maybe #(DMA_Dir) trigger_interrupt;
 
+   // The direction in which the SG unit is currently operationg
+   (* always_ready *)
+   method DMA_Dir current_dir;
+
    // The master used for reading and writing Buffer Descriptors
    interface AXI4_Master #(id_, addr_, data_,
-                           awuser_, wuser_, buser_,
-                           aruser_, ruser_) axi4_master;
+                           awuser_, wuser_, TAdd #(1, buser_),
+                           aruser_, TAdd #(1, ruser_)) axi4_master;
 
    method Action set_verbosity (Bit #(4) new_verb);
 
@@ -144,9 +148,7 @@ module mkAXI4_DMA_Scatter_Gather
       end
    endrule
 
-   AXI4_Shim #(id_, addr_, data_,
-               awuser_, wuser_, buser_,
-               aruser_, ruser_) shim <- mkAXI4ShimFF;
+   let shim <- mkAXI4ShimFF;
 
    Bit #(id_) base_id = 0;
 
@@ -280,7 +282,7 @@ module mkAXI4_DMA_Scatter_Gather
                              || (rg_state == DMA_APP_READ_RSP_OUTSTANDING
                                  && read_app_words))
                             && shim.slave.r.canPeek);
-      AXI4_RFlit #(id_, data_, ruser_) rflit = shim.slave.r.peek;
+      let rflit = shim.slave.r.peek;
       shim.slave.r.drop;
       rg_addr_bd_cur <= rg_addr_bd_incr;
       let rsp_count_new = rg_rsp_count;
@@ -539,7 +541,7 @@ module mkAXI4_DMA_Scatter_Gather
    rule rl_handle_write_rsp ((rg_state == DMA_MAIN_WRITE_RSP_OUTSTANDING
                               || rg_state == DMA_APP_WRITE_RSP_OUTSTANDING)
                              && shim.slave.b.canPeek);
-      AXI4_BFlit #(id_, buser_) bflit = shim.slave.b.peek;
+      let bflit = shim.slave.b.peek;
       shim.slave.b.drop;
 
       let iserr = False;
@@ -716,6 +718,8 @@ module mkAXI4_DMA_Scatter_Gather
    method Maybe #(DMA_Dir) trigger_interrupt;
       return rw_trigger_interrupt.wget;
    endmethod
+
+   method DMA_Dir current_dir = crg_dir[1];
 
    interface axi4_master = shim.master;
 

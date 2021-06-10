@@ -102,8 +102,8 @@ typedef Bit #(32) DMA_BD_Word;
 
 // tagged word to keep track of CHERI validity tags
 typedef struct {
-   DMA_BD_Word word;
    Bool tag;
+   DMA_BD_Word word;
 } DMA_BD_TagWord deriving (Bits, Eq, FShow);
 
 //Reg_ refers to the Register Module

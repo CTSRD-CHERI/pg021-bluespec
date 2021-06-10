@@ -18,6 +18,7 @@ import AXI4_DMA_Copy_Unit :: *;
 import AXI4_DMA_Types :: *;
 import AXI4_DMA_Internal_Reg_Module :: *;
 import AXI4_DMA_Utils :: *;
+import AXI4_DMA_CHERI_Checker :: *;
 
 typedef enum {
    RESET,
@@ -92,6 +93,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                            , Add #(o__, addr_, 64)
                            , Add #(p__, wuser_, 1)
                            , Add #(q__, 1, ruser_)
+                           , Add #(r__, 7, addr_)
                            );
 
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
@@ -124,6 +126,28 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                             awuser_, wuser_, buser_,
                             aruser_, ruser_,
                             strm_id_, sdata_, sdest_, suser_) dma_copy_unit <- mkAXI4_DMA_Copy_Unit (v_v_rg_bd, dma_int_reg);
+
+   CHERI_Checker_IFC #(mid_, addr_, data_,
+                       awuser_, wuser_, buser_,
+                       aruser_, ruser_) sg_checker <- mkCHERI_Checker;
+   CHERI_Checker_IFC #(mid_, addr_, data_,
+                       awuser_, wuser_, buser_,
+                       aruser_, ruser_) copy_checker <- mkCHERI_Checker;
+   mkConnection (sg_checker.slave,
+                 fn_extend_ar_aw_user_fields (axi_sg.axi4_master,
+                                              axi_sg.current_dir == S2MM ? dma_int_reg.s2mm_curdesc_cap
+                                                                         : dma_int_reg.mm2s_curdesc_cap));
+   // TODO handle 32bit/64bit
+   let copy_unit_cap_tag = v_v_rg_bd[pack (dma_copy_unit.current_dir)][pack (DMA_BUFFER_ADDRESS_3)].tag
+                           && v_v_rg_bd[pack (dma_copy_unit.current_dir)][pack (DMA_BUFFER_ADDRESS_2)].tag
+                           && v_v_rg_bd[pack (dma_copy_unit.current_dir)][pack (DMA_BUFFER_ADDRESS_1)].tag
+                           && v_v_rg_bd[pack (dma_copy_unit.current_dir)][pack (DMA_BUFFER_ADDRESS_0)].tag;
+
+   let copy_unit_cap_val = { v_v_rg_bd[pack (dma_copy_unit.current_dir)][pack (DMA_BUFFER_ADDRESS_3)].word
+                           , v_v_rg_bd[pack (dma_copy_unit.current_dir)][pack (DMA_BUFFER_ADDRESS_2)].word
+                           , v_v_rg_bd[pack (dma_copy_unit.current_dir)][pack (DMA_BUFFER_ADDRESS_1)].word
+                           , v_v_rg_bd[pack (dma_copy_unit.current_dir)][pack (DMA_BUFFER_ADDRESS_0)].word};
+   mkConnection (copy_checker.slave, fn_extend_ar_aw_user_fields (dma_copy_unit.axi4_master, {copy_unit_cap_tag ? 1'b1 : 1'b0, copy_unit_cap_val}));
 
 
    // FIFO containing triggers from the Register Module
@@ -238,12 +262,26 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
          // to avoid that
          DMA_Dir dir_local = MM2S;
          // TODO handle 32bit addresses
-         Bit #(addr_) address = rg_mm2s_first_fetch ? truncate ({pack (dma_int_reg.mm2s_curdesc_msb)
-                                                      ,pack (dma_int_reg.mm2s_curdesc)})
-                                                    : truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word
-                                                      ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word});
+         Bit #(addr_) cur_addr = truncate ({pack (dma_int_reg.mm2s_curdesc_msb),
+                                            pack (dma_int_reg.mm2s_curdesc)});
+         Bit #(addr_) nxt_addr = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word,
+                                            v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word});
+         Bit #(addr_) address = rg_mm2s_first_fetch ? cur_addr
+                                                    : nxt_addr;
          dma_int_reg.mm2s_curdesc_write (unpack (truncate (address)));
          dma_int_reg.mm2s_curdesc_msb_write (unpack (truncateLSB (address)));
+         if (!rg_mm2s_first_fetch) begin
+            // TODO this assumes 128-bit capabilities
+            let nxt_tag = v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].tag
+                          && v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].tag
+                          && v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_2)].tag
+                          && v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_3)].tag;
+            let nxt_cap_val = { v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word
+                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word
+                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_2)].word
+                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_3)].word};
+            dma_int_reg.mm2s_curdesc_cap_write (unpack ({pack (nxt_tag), nxt_cap_val}));
+         end
          if (rg_verbosity > 0) begin
             $display ("MM2S trigger handling");
             $display ("    addr: ", fshow(address));
@@ -256,12 +294,25 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
          // to avoid that
          DMA_Dir dir_local = S2MM;
          // TODO handle 32bit addresses
-         Bit #(addr_) address = rg_s2mm_first_fetch ? truncate ({pack (dma_int_reg.s2mm_curdesc_msb)
-                                                      ,pack (dma_int_reg.s2mm_curdesc)})
-                                                    : truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word
-                                                      ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word});
+         Bit #(addr_) cur_addr = truncate ({pack (dma_int_reg.s2mm_curdesc_msb),
+                                            pack (dma_int_reg.s2mm_curdesc)});
+         Bit #(addr_) nxt_addr = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word,
+                                            v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word});
+         Bit #(addr_) address = rg_s2mm_first_fetch ? cur_addr
+                                                    : nxt_addr;
          dma_int_reg.s2mm_curdesc_write (unpack (truncate (address)));
          dma_int_reg.s2mm_curdesc_msb_write (unpack (truncateLSB (address)));
+         if (!rg_s2mm_first_fetch) begin
+            let nxt_tag = v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].tag
+                          && v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].tag
+                          && v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_2)].tag
+                          && v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_3)].tag;
+            let nxt_cap_val = { v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word
+                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word
+                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_2)].word
+                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_3)].word};
+            dma_int_reg.s2mm_curdesc_cap_write (unpack ({pack (nxt_tag), nxt_cap_val}));
+         end
          if (rg_verbosity > 0) begin
             $display ("S2MM trigger handling");
             $display ("    addr: ", fshow(address));
@@ -412,11 +463,10 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                                | ( dma_int_reg.mm2s_dmasr.ioc_irq & dma_int_reg.mm2s_dmacr.ioc_irqen )
                                ) == 1'b1;
 
-   interface axi_sg_master = axi_sg.axi4_master;
+   interface axi_sg_master = fn_truncate_ar_aw_user_fields (sg_checker.master);
+   interface axi_copy_master = fn_truncate_ar_aw_user_fields (copy_checker.master);
 
    interface axi_reg_slave = dma_reg.axi4_slave;
-
-   interface axi_copy_master = dma_copy_unit.axi4_master;
 
    method Action set_verbosity (Bit #(4) new_verb);
       rg_verbosity <= new_verb;
@@ -424,7 +474,9 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
       dma_reg.set_verbosity            (new_verb);
       dma_copy_unit.set_verbosity      (new_verb);
       dma_int_reg.set_verbosity        (new_verb);
-      //axi4s_loopback.set_verbosity     (new_verb);
+      axi4s_loopback.set_verbosity     (new_verb);
+      sg_checker.set_verbosity         (new_verb);
+      copy_checker.set_verbosity       (new_verb);
    endmethod
 
    method Action reset;

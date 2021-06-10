@@ -273,19 +273,18 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
       CapMem newCap = unpack ({is_valid, // only valid if both flits had wuser == 1
                                wflit.wdata,
                                truncate(rg_cap)});
-      CapPipe newCapFat = cast (newCap);
 
       if (idx == DMA_S2MM_CURDESC_CAP) begin
-         dma_int_reg.s2mm_curdesc_cap_write (newCapFat);
+         dma_int_reg.s2mm_curdesc_cap_write (newCap);
       end
       else if (idx == DMA_MM2S_CURDESC_CAP) begin
-         dma_int_reg.mm2s_curdesc_cap_write (newCapFat);
+         dma_int_reg.mm2s_curdesc_cap_write (newCap);
       end
 
 
       if (rg_verbosity > 0) begin
          $display ("wrote capability into rg_cap");
-         $display ("    new cap: ", fshow (newCapFat));
+         $display ("    new cap: ", fshow (newCap));
          $display ("    index: ", fshow (idx));
       end
       rg_state <= RUNNING;

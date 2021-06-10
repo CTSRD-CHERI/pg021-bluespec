@@ -31,8 +31,8 @@ interface AXI4_DMA_Int_Reg_IFC;
    method MM2S_TAILDESC_MSB mm2s_taildesc_msb;
    method Action            mm2s_taildesc_msb_write (MM2S_TAILDESC_MSB newval);
 
-   method CapPipe           mm2s_curdesc_cap;
-   method Action            mm2s_curdesc_cap_write  (CapPipe newval);
+   method CapMem            mm2s_curdesc_cap;
+   method Action            mm2s_curdesc_cap_write  (CapMem newval);
 
 
    method S2MM_DMACR        s2mm_dmacr;
@@ -53,8 +53,8 @@ interface AXI4_DMA_Int_Reg_IFC;
    method S2MM_TAILDESC_MSB s2mm_taildesc_msb;
    method Action            s2mm_taildesc_msb_write (S2MM_TAILDESC_MSB newval);
 
-   method CapPipe           s2mm_curdesc_cap;
-   method Action            s2mm_curdesc_cap_write  (CapPipe newval);
+   method CapMem            s2mm_curdesc_cap;
+   method Action            s2mm_curdesc_cap_write  (CapMem newval);
 
 
    // These methods should be used by the slave interface to write the appropriate
@@ -78,7 +78,7 @@ module mkAXI4_DMA_Int_Reg (AXI4_DMA_Int_Reg_IFC);
    Reg #(MM2S_CURDESC_MSB)  rg_mm2s_curdesc_msb  <- mkReg (mm2s_curdesc_msb_default);
    Reg #(MM2S_TAILDESC)     rg_mm2s_taildesc     <- mkReg (mm2s_taildesc_default);
    Reg #(MM2S_TAILDESC_MSB) rg_mm2s_taildesc_msb <- mkReg (mm2s_taildesc_msb_default);
-   Reg #(CapPipe)           rg_mm2s_curdesc_cap  <- mkReg (nullCap);
+   Reg #(CapMem)            rg_mm2s_curdesc_cap  <- mkReg (nullCap);
 
    Reg #(S2MM_DMACR)        rg_s2mm_dmacr        <- mkReg (s2mm_dmacr_default);
    Reg #(S2MM_DMASR)        rg_s2mm_dmasr        <- mkReg (s2mm_dmasr_default);
@@ -86,7 +86,7 @@ module mkAXI4_DMA_Int_Reg (AXI4_DMA_Int_Reg_IFC);
    Reg #(S2MM_CURDESC_MSB)  rg_s2mm_curdesc_msb  <- mkReg (s2mm_curdesc_msb_default);
    Reg #(S2MM_TAILDESC)     rg_s2mm_taildesc     <- mkReg (s2mm_taildesc_default);
    Reg #(S2MM_TAILDESC_MSB) rg_s2mm_taildesc_msb <- mkReg (s2mm_taildesc_msb_default);
-   Reg #(CapPipe)           rg_s2mm_curdesc_cap  <- mkReg (nullCap);
+   Reg #(CapMem)            rg_s2mm_curdesc_cap  <- mkReg (nullCap);
 
    rule rl_reset (rg_state == RESET);
       if (rg_verbosity > 0) begin
@@ -142,7 +142,7 @@ module mkAXI4_DMA_Int_Reg (AXI4_DMA_Int_Reg_IFC);
    endmethod
 
    method        mm2s_curdesc_cap = rg_mm2s_curdesc_cap;
-   method Action mm2s_curdesc_cap_write (CapPipe newval) if (rg_state != RESET);
+   method Action mm2s_curdesc_cap_write (CapMem newval) if (rg_state != RESET);
       rg_mm2s_curdesc_cap <= newval;
    endmethod
 
@@ -178,7 +178,7 @@ module mkAXI4_DMA_Int_Reg (AXI4_DMA_Int_Reg_IFC);
    endmethod
 
    method        s2mm_curdesc_cap = rg_s2mm_curdesc_cap;
-   method Action s2mm_curdesc_cap_write (CapPipe newval) if (rg_state != RESET);
+   method Action s2mm_curdesc_cap_write (CapMem newval) if (rg_state != RESET);
       rg_s2mm_curdesc_cap <= newval;
    endmethod
 

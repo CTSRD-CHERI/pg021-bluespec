@@ -32,8 +32,8 @@ interface AXI4_DMA_Copy_Unit_IFC #(numeric type id_
                                   ,numeric type suser_);
 
    interface AXI4_Master #(id_, addr_, data_,
-                           awuser_, wuser_, buser_,
-                           aruser_, ruser_) axi4_master;
+                           awuser_, wuser_, TAdd #(1, buser_),
+                           aruser_, TAdd #(1, ruser_)) axi4_master;
 
    interface AXI4Stream_Master #(sid_, sdata_, sdest_, suser_) axi4s_data_master;
    interface AXI4Stream_Master #(sid_, sdata_, sdest_, suser_) axi4s_meta_master;
@@ -44,6 +44,8 @@ interface AXI4_DMA_Copy_Unit_IFC #(numeric type id_
    method Action trigger;
 
    method Maybe #(DMA_Dir) end_trigger;
+
+   method DMA_Dir current_dir;
 
    method Action set_verbosity (Bit #(4) new_verb);
 
@@ -87,9 +89,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
 
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
 
-   AXI4_Shim #(id_, addr_, data_,
-               awuser_, wuser_, buser_,
-               aruser_, ruser_) shim <- mkAXI4ShimFF;
+   let shim <- mkAXI4ShimFF;
 
    // AXI 4 Stream slave shim
    // We are the master of this slave, and we write flits into it
@@ -869,6 +869,8 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    endmethod
 
    method Maybe #(DMA_Dir) end_trigger = rw_end_trigger.wget;
+
+   method DMA_Dir current_dir = crg_dir[1];
 
    method Action set_verbosity (Bit #(4) new_verb);
       rg_verbosity <= new_verb;
