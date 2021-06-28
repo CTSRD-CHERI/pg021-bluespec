@@ -45,6 +45,23 @@ typedef enum {
    S2MM
 } DMA_Dir deriving (Bits, Eq, FShow);
 
+typedef enum {
+   INTERR,
+   DECERR,
+   SLVERR,
+   CHERIERR
+} DMA_Err_Cause deriving (Bits, Eq, FShow);
+
+typedef enum {
+   SG_UNIT,
+   COPY_UNIT
+} DMA_Err_Source deriving (Bits, Eq, FShow);
+
+typedef struct {
+   DMA_Err_Cause cause;
+   DMA_Err_Source source;
+} DMA_Err deriving (Bits, FShow);
+
 
 // Modified BD setup, to allow enough contiguous space for capabilities
 // Adding an extra reserved word after DMA_APP4 makes the BD an even 16 bytes
@@ -182,11 +199,11 @@ typedef struct {
    Bit #(1) err_irq;
    Bit #(1) dly_irq;
    Bit #(1) ioc_irq;
-   Bit #(1) reserved2;
+   Bit #(1) sgcherierr;
    Bit #(1) sgdecerr;
    Bit #(1) sgslverr;
    Bit #(1) sginterr;
-   Bit #(1) reserved3;
+   Bit #(1) dmacherierr;
    Bit #(1) dmadecerr;
    Bit #(1) dmaslverr;
    Bit #(1) dmainterr;
@@ -203,11 +220,11 @@ MM2S_DMASR mm2s_dmasr_default = MM2S_DMASR {
    err_irq          : 0,
    dly_irq          : 0,
    ioc_irq          : 0,
-   reserved2        : 0,
+   sgcherierr       : 0,
    sgdecerr         : 0,
    sgslverr         : 0,
    sginterr         : 0,
-   reserved3        : 0,
+   dmacherierr      : 0,
    dmadecerr        : 0,
    dmaslverr        : 0,
    dmainterr        : 0,
@@ -224,11 +241,11 @@ MM2S_DMASR mm2s_dmasr_rw_mask = MM2S_DMASR {
    err_irq         : `ONES,
    dly_irq         : `ONES,
    ioc_irq         : `ONES,
-   reserved2       : `ZEROES,
+   sgcherierr      : `ZEROES,
    sgdecerr        : `ZEROES,
    sgslverr        : `ZEROES,
    sginterr        : `ZEROES,
-   reserved3       : `ZEROES,
+   dmacherierr     : `ZEROES,
    dmadecerr       : `ZEROES,
    dmaslverr       : `ZEROES,
    dmainterr       : `ZEROES,
@@ -354,11 +371,11 @@ typedef struct {
    Bit #(1) err_irq;
    Bit #(1) dly_irq;
    Bit #(1) ioc_irq;
-   Bit #(1) reserved2;
+   Bit #(1) sgcherierr;
    Bit #(1) sgdecerr;
    Bit #(1) sgslverr;
    Bit #(1) sginterr;
-   Bit #(1) reserved3;
+   Bit #(1) dmacherierr;
    Bit #(1) dmadecerr;
    Bit #(1) dmaslverr;
    Bit #(1) dmainterr;
@@ -375,11 +392,11 @@ S2MM_DMASR s2mm_dmasr_default = S2MM_DMASR {
    err_irq         : 0,
    dly_irq         : 0,
    ioc_irq         : 0,
-   reserved2       : 0,
+   sgcherierr      : 0,
    sgdecerr        : 0,
    sgslverr        : 0,
    sginterr        : 0,
-   reserved3       : 0,
+   dmacherierr     : 0,
    dmadecerr       : 0,
    dmaslverr       : 0,
    dmainterr       : 0,
@@ -396,11 +413,11 @@ S2MM_DMASR s2mm_dmasr_rw_mask = S2MM_DMASR {
    err_irq           : `ONES,
    dly_irq           : `ONES,
    ioc_irq           : `ONES,
-   reserved2         : `ZEROES,
+   sgcherierr        : `ZEROES,
    sgdecerr          : `ZEROES,
    sgslverr          : `ZEROES,
    sginterr          : `ZEROES,
-   reserved3         : `ZEROES,
+   dmacherierr       : `ZEROES,
    dmadecerr         : `ZEROES,
    dmaslverr         : `ZEROES,
    dmainterr         : `ZEROES,

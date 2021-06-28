@@ -5,6 +5,8 @@ import Vector :: *;
 import FIFOF :: *;
 import SpecialFIFOs :: *;
 import FIFOLevel :: *;
+import GetPut :: *;
+import ClientServer :: *;
 
 // AXI imports
 import AXI :: *;
@@ -51,6 +53,8 @@ interface AXI4_DMA_Copy_Unit_IFC #(numeric type id_
 
    method Action reset;
    method Action halt_to_idle;
+   interface Server #(Bit #(0), Bit #(0)) srv_halt;
+   method Maybe #(DMA_Err_Cause) enq_halt_o;
 endinterface
 
 typedef enum {
@@ -90,31 +94,37 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
 
    let shim <- mkAXI4ShimFF;
+   let ugshim_slave <- toUnguarded_AXI4_Slave (shim.slave);
 
    // AXI 4 Stream slave shim
    // We are the master of this slave, and we write flits into it
    // This is the shim through which the actual data passes
    AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_s_data_shim <- mkAXI4StreamShimFF;
+   let axi4s_s_data_ugshim_slave <- toUnguarded_AXI4Stream_Slave (axi4s_s_data_shim.slave);
 
    // This is the shim through which metadata passes
    // Used to communicate with the ethernet block
    // For the ethernet block, the metadata is transferred first, and then the actual
    // data is transferred
    AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_s_meta_shim <- mkAXI4StreamShimFF;
+   let axi4s_s_meta_ugshim_slave <- toUnguarded_AXI4Stream_Slave (axi4s_s_meta_shim.slave);
 
    // AXI 4 Stream master shims
    // We are the slave of this master, and we read flits from it
    // This is the shim through which the actual data passes
    AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_m_data_shim <- mkAXI4StreamShimFF;
+   let axi4s_m_data_ugshim_master <- toUnguarded_AXI4Stream_Master (axi4s_m_data_shim.master);
 
    // This is the shim through which metadata passes
    // Used to communicate with the ethernet block
    // For the ethernet block, the metadata is transferred first, and then the actual
    // data is transferred
    AXI4Stream_Shim #(sid_, sdata_, sdest_, suser_) axi4s_m_meta_shim <- mkAXI4StreamShimFF;
+   let axi4s_m_meta_ugshim_master <- toUnguarded_AXI4Stream_Master (axi4s_m_meta_shim.master);
 
    Reg #(DMA_Dir) crg_dir[2] <- mkCReg (2, MM2S);
    Reg #(State) rg_state <- mkReg (HALTED);
+   FIFOF #(Bit #(0)) ugfifo_halt <- mkUGFIFOF1;
 
    // Use a FIFO with a level, so that we can see how much data is in it
    // We only send read requests when there is space for the full request,
@@ -195,6 +205,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    Reg #(Bit #(26)) rg_stream_out_count <- mkReg (0);
 
    RWire #(DMA_Dir) rw_end_trigger <- mkRWireSBR;
+   RWire #(DMA_Err_Cause) rw_enq_halt_o <- mkRWire;
 
    // Whether making a request for (len+1) words would cross a 4KB boundary
    // (crossing 4KB boundaries in a burst is not allowed in AXI)
@@ -277,24 +288,27 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    // we can write to it
    rule rl_s2mm_metadata_transfer_start (rg_state == IDLE
                                          && dma_int_reg.s2mm_dmasr.halted == 1'b0
-                                         && axi4s_m_meta_shim.master.canPeek);
+                                         && axi4s_m_meta_ugshim_master.canPeek);
       if (rg_verbosity > 0) begin
          $display ("AXI4 DMA Copy Unit receiving S2MM metadata");
+         if (rg_verbosity > 1) begin
+            $display ("    flit: ", fshow (axi4s_m_meta_ugshim_master.peek));
+         end
       end
-      if (truncate (axi4s_m_meta_shim.master.peek.tstrb) != 4'hf) begin
+      if (truncate (axi4s_m_meta_ugshim_master.peek.tstrb) != 4'hf) begin
          $display ("AXI4 DMA Copy Unit: Error: Received non-full word from ethernet");
       end
-      if (axi4s_m_meta_shim.master.peek.tlast) begin
+      if (axi4s_m_meta_ugshim_master.peek.tlast) begin
          $display ("AXI4 DMA Copy Unit: Error: First word from ethernet was also last");
       end
-      if (truncate (axi4s_m_meta_shim.master.peek.tkeep) != 4'hf) begin
+      if (truncate (axi4s_m_meta_ugshim_master.peek.tkeep) != 4'hf) begin
          $display ("AXI4 DMA Copy Unit: Error: Received null byte from ethernet");
       end
-      if (axi4s_m_meta_shim.master.peek.tdata[31:28] != 'h5) begin
+      if (axi4s_m_meta_ugshim_master.peek.tdata[31:28] != 'h5) begin
          $display ("AXI4 DMA Copy Unit: Error: Received wrong transfer type from ethernet");
       end
 
-      axi4s_m_meta_shim.master.drop;
+      axi4s_m_meta_ugshim_master.drop;
       rg_state <= META_RECEIVE_S2MM;
       // start the counter at zero for code clarity (we can just add the counter to
       // the address of _APP0 to get which word we are changing now)
@@ -304,11 +318,15 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    // Receive the rest of the metadata for this ethernet frame, and
    // update the Buffer Descriptor application fields accordingly
    rule rl_s2mm_metadata_receive (rg_state == META_RECEIVE_S2MM
-                                  && axi4s_m_meta_shim.master.canPeek);
-      axi4s_m_meta_shim.master.drop;
+                                  && axi4s_m_meta_ugshim_master.canPeek);
+      axi4s_m_meta_ugshim_master.drop;
+      if (rg_verbosity > 1) begin
+         $display ("AXI4 DMA Copy Unit rl_s2mm_metadata_receive");
+         $display ("    flit: ", fshow (axi4s_m_meta_ugshim_master.peek));
+      end
 
       v_v_rg_bd[pack (S2MM)][pack (DMA_APP0) + zeroExtend (rg_meta_counter)]
-         <= fn_to_untagged_tagword (truncate (axi4s_m_meta_shim.master.peek.tdata));
+         <= fn_to_untagged_tagword (truncate (axi4s_m_meta_ugshim_master.peek.tdata));
 
       // We start the counter at zero for clarity above, which means that
       // it is actually one lower than the real number of words received.
@@ -327,7 +345,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
          v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)] <=
             fn_to_untagged_tagword (v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)].word
                                     | {1'b1, 3'b0, 1'b1, 1'b1, 26'b0});
-         if (!axi4s_m_meta_shim.master.peek.tlast) begin
+         if (!axi4s_m_meta_ugshim_master.peek.tlast) begin
             $display ("AXI4 DMA Copy Unit: Error: Received more than 6 metadata words");
          end
       end
@@ -344,7 +362,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    // AWFlit should be, so we don't yet send out an AWFlit
    rule rl_s2mm_data_transfer_start (rg_state == META_RECEIVE_S2MM
                                 && rg_meta_counter == 5
-                                && axi4s_m_data_shim.master.canPeek);
+                                && axi4s_m_data_ugshim_master.canPeek);
       if (rg_verbosity > 0) begin
          $display ("AXI4 DMA Copy Unit starting S2MM transfer");
       end
@@ -362,34 +380,37 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    // have tkeep = 'hf and tstrb = 'hf
    rule rl_s2mm_deq_from_stream (rg_state == COPYING
                                  && crg_dir[0] == S2MM
-                                 && axi4s_m_data_shim.master.canPeek
+                                 && axi4s_m_data_ugshim_master.canPeek
                                  && fifo_data.notFull);
       if (rg_verbosity > 0) begin
          $display ("AXI4 DMA Copy Unit dequeueing data from stream");
       end
       if (rg_verbosity > 1) begin
-         $display ("    data: ", fshow (axi4s_m_data_shim.master.peek.tdata));
+         $display ("    data: ", fshow (axi4s_m_data_ugshim_master.peek.tdata));
       end
       // handle transferring the data
-      axi4s_m_data_shim.master.drop;
+      axi4s_m_data_ugshim_master.drop;
       // TODO not sure if this should be done with tkeep or tstrb
-      let tkeep = axi4s_m_data_shim.master.peek.tkeep;
+      let tkeep = axi4s_m_data_ugshim_master.peek.tkeep;
       let mask = { tkeep[3] == 1 ? 8'hff : 8'h0
                  , tkeep[2] == 1 ? 8'hff : 8'h0
                  , tkeep[1] == 1 ? 8'hff : 8'h0
                  , tkeep[0] == 1 ? 8'hff : 8'h0};
-      fifo_data.enq (axi4s_m_data_shim.master.peek.tdata & mask);
+      let bytes_rcvd = tkeep[3] == 1 ? 4
+                     : tkeep[2] == 1 ? 3
+                     : tkeep[1] == 1 ? 2 : 1;
+      fifo_data.enq (axi4s_m_data_ugshim_master.peek.tdata & mask);
       // TODO this assumes 32bit transfers
-      rg_buf_len <= rg_buf_len + 4;
+      rg_buf_len <= rg_buf_len + bytes_rcvd;
 
       // handle the last flit
-      if (axi4s_m_data_shim.master.peek.tlast) begin
+      if (axi4s_m_data_ugshim_master.peek.tlast) begin
          // This is the last flit of data
          rg_state <= WAIT_FOR_FINAL_DEQ;
-         if (rg_buf_len + 4 != zeroExtend (v_v_rg_bd[pack (S2MM)][pack (DMA_APP4)].word[15:0])) begin
+         if (rg_buf_len + bytes_rcvd != zeroExtend (v_v_rg_bd[pack (S2MM)][pack (DMA_APP4)].word[15:0])) begin
             $display ("AXI4 DMA Copy Unit: Error: Received the wrong number of data bytes");
             // TODO this assumes 32bit transfers
-            $display ("    Real bytes received: ", fshow (rg_buf_len + 4));
+            $display ("    Real bytes received: ", fshow (rg_buf_len + bytes_rcvd));
             $display ("    Number of bytes that should have been received: ",
                       fshow (v_v_rg_bd[pack (S2MM)][pack (DMA_APP4)].word[15:0]));
          end
@@ -406,7 +427,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
                                 && ((rg_state == COPYING && fifo_data.count > 7) // there is enough data for an 8-flit burst
                                     || (rg_state == WAIT_FOR_FINAL_DEQ))       // we have received the last flit from the stream
                                 && fifo_data.notEmpty
-                                && shim.slave.aw.canPut
+                                && ugshim_slave.aw.canPut
                                 && !rg_txion_in_flight
                                 && !rg_bresp_required);
       AXI4_Len len = min (7, zeroExtend (pack (fifo_data.count - 1)));
@@ -458,7 +479,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
          $display ("DMA Copy Unit producing S2MM AWFlit");
          $display ("   flit: ", fshow (awflit));
       end
-      shim.slave.aw.put (awflit);
+      ugshim_slave.aw.put (awflit);
       if (rg_bresp_required) begin
          $display ("DMA Copy Unit: ERROR: Producing AWFlit without having received BResp from");
          $display ("                      previous AWFlit");
@@ -471,7 +492,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    rule rl_s2mm_produce_wflit (crg_dir[0] == S2MM
                               && (rg_state == COPYING || rg_state == WAIT_FOR_FINAL_DEQ)
                               && rg_txion_in_flight
-                              && shim.slave.w.canPut
+                              && ugshim_slave.w.canPut
                               && fifo_data.notEmpty);
       if (rg_prev_arlen == rg_txion_counter) begin
          // After this flit, we will have sent off enough data that we
@@ -488,7 +509,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
          wlast : rg_prev_arlen == rg_txion_counter,
          wuser : 0
       };
-      shim.slave.w.put (wflit);
+      ugshim_slave.w.put (wflit);
       if (rg_verbosity > 0) begin
          $display ("DMA Copy Unit producing wflit");
          $display ("   wflit: ", fshow (wflit));
@@ -506,26 +527,56 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    rule rl_s2mm_handle_bresp ((rg_state == COPYING || rg_state == WAIT_FOR_FINAL_DEQ)
                               && rg_bresp_required
                               && crg_dir[0] == S2MM
-                              && shim.slave.b.canPeek);
+                              && ugshim_slave.b.canPeek);
       rg_bresp_required <= False;
-      // TODO handle slave errors
-      shim.slave.b.drop;
-      if (rg_bresp_last) begin
+      ugshim_slave.b.drop;
+
+      let bflit = ugshim_slave.b.peek;
+      let cheri_err = bflit.bresp == SLVERR && truncateLSB(bflit.buser) == 1'b1;
+
+      if (bflit.bresp == SLVERR && bflit.bresp == DECERR) begin
+         ugfifo_halt.enq (?);
          if (rg_verbosity > 0) begin
-            $display ("DMA Copy Unit: finished s2mm transfer, going back to idle");
+            $display ("DMA Copy Unit: got errored B response");
+            if (rg_verbosity > 1) begin
+               $display ("    flit: ", fshow (bflit));
+            end
+            if (cheri_err) begin
+               if (rg_verbosity > 0) begin
+                  $display ("    Errored due to CHERI capability not authorising access");
+               end
+               rw_enq_halt_o.wset (CHERIERR);
+            end else if (bflit.bresp == SLVERR) begin
+               if (rg_verbosity > 0) begin
+                  $display ("    Errored due to SLVERR");
+               end
+               rw_enq_halt_o.wset (SLVERR);
+            end else begin
+               if (rg_verbosity > 0) begin
+                  $display ("    Errored due to DECERR");
+               end
+               rw_enq_halt_o.wset (DECERR);
+            end
          end
-         rg_state <= IDLE;
-         rw_end_trigger.wset (S2MM);
-         let val_to_write = fn_to_untagged_tagword (v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)].word
-                                                    | {1'b1, 0});
-         v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)] <= val_to_write;
-         if (rg_verbosity > 1) begin
-            $display ("DMA Copy Unit: Set S2MM Status to ", fshow (val_to_write));
+      end else begin
+         if (rg_bresp_last) begin
+            if (rg_verbosity > 0) begin
+               $display ("DMA Copy Unit: finished s2mm transfer, going back to idle");
+            end
+            rg_state <= IDLE;
+            rw_end_trigger.wset (S2MM);
+            let sts_to_write = fn_to_untagged_tagword (v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)].word
+                                                       | {1'b1, zeroExtend (rg_buf_len)});
+            v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)] <= sts_to_write;
+            if (rg_verbosity > 1) begin
+               $display ("DMA Copy Unit: Set S2MM Status to ", fshow (sts_to_write));
+               //$display ("               Set DMA_APP4 to ", fshow (app4_to_write));
+            end
+            rg_bresp_last <= False;
          end
-         rg_bresp_last <= False;
-      end
-      if (rg_verbosity > 0) begin
-         $display ("DMA Copy Unit: Received and acknowledged BResp");
+         if (rg_verbosity > 0) begin
+            $display ("DMA Copy Unit: Received and acknowledged BResp");
+         end
       end
    endrule
 
@@ -536,7 +587,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
 
    // Start off with transferring metadata on the metadata stream
    rule rl_mm2s_meta_transfer (rg_state == META_SEND_MM2S
-                               && axi4s_s_meta_shim.slave.canPut);
+                               && axi4s_s_meta_ugshim_slave.canPut);
       AXI4Stream_Flit #(sid_, sdata_, sdest_, suser_) flit = AXI4Stream_Flit {
          tdata: zeroExtend (v_v_rg_bd[pack (MM2S)][pack (DMA_APP0) + zeroExtend (rg_meta_counter)].word),
          tstrb: ~0,
@@ -546,7 +597,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
          tdest: 0,
          tuser: 0
       };
-      axi4s_s_meta_shim.slave.put (flit);
+      axi4s_s_meta_ugshim_slave.put (flit);
 
       // We start this counter at 0 when we send the first byte in order
       // to clarify when selecting which APP word we are writing, so when
@@ -562,7 +613,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    rule rl_mm2s_fifof_deq ((rg_state == COPYING
                             || rg_state == WAIT_FOR_FINAL_DEQ)
                           && crg_dir[0] == MM2S
-                          && axi4s_s_data_shim.slave.canPut
+                          && axi4s_s_data_ugshim_slave.canPut
                           && rg_stream_out_count < rg_buf_len);
       fifo_data.deq;
       if (rg_verbosity > 1) begin
@@ -586,7 +637,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
       if (active_bytes == 4'h0) begin
          $display ("AXI Copy Unit: ERROR: writing flit to stream with no active bytes");
       end
-      axi4s_s_data_shim.slave.put (flit);
+      axi4s_s_data_ugshim_slave.put (flit);
       rg_stream_out_count <= rg_stream_out_count + 4;
 
       if (rg_verbosity > 1) begin
@@ -626,7 +677,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
                             && crg_dir[0] == MM2S
                             && rg_buf_cur < rg_buf_len // ie amt_buf_left > 0
                             && !rg_txion_in_flight
-                            && shim.slave.ar.canPut);
+                            && ugshim_slave.ar.canPut);
       Bit #(3) len = fn_arlen_from_4k_boundary (rg_addr_next_byte);
       if (fn_crosses_4k_boundary (rg_addr_next_byte, len)) begin
          // if we get here, then it means that fn_crosses_4k_boundary thinks that our address will
@@ -708,48 +759,277 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
          $display ("    rg_buf_cur: ", fshow (rg_buf_cur));
          $display ("    amt_buf_left: ", fshow (amt_buf_left));
       end
-      shim.slave.ar.put (arflit);
+      ugshim_slave.ar.put (arflit);
       rg_txion_in_flight <= True;
    endrule
 
    // handle read responses when copying in the MM2S direction
    rule rl_handle_read_rsp (rg_state == COPYING
                            && crg_dir[0] == MM2S
-                           && shim.slave.r.canPeek
+                           && ugshim_slave.r.canPeek
                            );
-      shim.slave.r.drop;
-      let rflit = shim.slave.r.peek;
+      ugshim_slave.r.drop;
+      let rflit = ugshim_slave.r.peek;
+      let cheri_err = rflit.rresp == SLVERR && truncateLSB (rflit.ruser) == 1'b1;
 
-      DMA_Copy_Word data = rg_word_in_upper ? truncateLSB (rflit.rdata) : truncate (rflit.rdata);
-      rg_word_in_upper <= !rg_word_in_upper;
-
-      if (rg_verbosity > 0) begin
-         $display ("DMA copy unit got response: ", fshow (rflit));
-      end
-      if (rg_verbosity > 0) begin
-         $display ("    enqueueing data: ", fshow (data));
-         $display ("    rg_buf_len: ", fshow (rg_buf_len));
-         $display ("    rg_buf_cur: ", fshow (rg_buf_cur));
-      end
-      fifo_data.enq (data);
-
-      // TODO this assumes 32bit transfers
-      rg_addr_next_byte <= rg_addr_next_byte + 4;
-      rg_buf_cur <= rg_buf_cur + 4;
-      rg_txion_counter <= rg_txion_counter + 1;
-
-      if (rflit.rlast) begin
-         if (rg_txion_counter != rg_prev_arlen) begin
-            $display ("DMA Copy Unit: ERROR: did not receive enough responses from memory");
-         end else begin
-            $display ("DMA Copy Unit: received enough read responses from memory");
+      if (rflit.rresp == SLVERR || rflit.rresp == DECERR) begin
+         ugfifo_halt.enq (?);
+         if (rg_verbosity > 0) begin
+            $display ("DMA Copy Unit: got errored R response");
+            if (rg_verbosity > 1) begin
+               $display ("    flit: ", fshow (rflit));
+            end
+            if (cheri_err) begin
+               if (rg_verbosity > 0) begin
+                  $display ("    Errored due to CHERI capability not authorising access");
+               end
+               rw_enq_halt_o.wset (CHERIERR);
+            end else if (rflit.rresp == SLVERR) begin
+               if (rg_verbosity > 0) begin
+                  $display ("    Errored due to SLVERR");
+               end
+               rw_enq_halt_o.wset (SLVERR);
+            end else begin
+               if (rg_verbosity > 0) begin
+                  $display ("    Errored due to DECERR");
+               end
+               rw_enq_halt_o.wset (DECERR);
+            end
          end
-         rg_txion_in_flight <= False;
+      end else begin
+         DMA_Copy_Word data = rg_word_in_upper ? truncateLSB (rflit.rdata) : truncate (rflit.rdata);
+         rg_word_in_upper <= !rg_word_in_upper;
+
+         if (rg_verbosity > 0) begin
+            $display ("DMA copy unit got response: ", fshow (rflit));
+         end
+         if (rg_verbosity > 0) begin
+            $display ("    enqueueing data: ", fshow (data));
+            $display ("    rg_buf_len: ", fshow (rg_buf_len));
+            $display ("    rg_buf_cur: ", fshow (rg_buf_cur));
+         end
+         fifo_data.enq (data);
+
          // TODO this assumes 32bit transfers
-         if (rg_buf_cur >= rg_buf_len-4) begin
-            rg_state <= WAIT_FOR_FINAL_DEQ;
+         rg_addr_next_byte <= rg_addr_next_byte + 4;
+         rg_buf_cur <= rg_buf_cur + 4;
+         rg_txion_counter <= rg_txion_counter + 1;
+
+         if (rflit.rlast) begin
+            if (rg_txion_counter != rg_prev_arlen) begin
+               $display ("DMA Copy Unit: ERROR: did not receive enough responses from memory");
+            end else begin
+               $display ("DMA Copy Unit: received enough read responses from memory");
+            end
+            rg_txion_in_flight <= False;
+            // TODO this assumes 32bit transfers
+            if (rg_buf_cur >= rg_buf_len-4) begin
+               rg_state <= WAIT_FOR_FINAL_DEQ;
+            end
          end
       end
+   endrule
+
+   rule rl_handle_halt (ugfifo_halt.notEmpty);
+      if (rg_verbosity > 1) begin
+         $display ("Copy Unit rl_handle_halt");
+      end
+      case (rg_state)
+         // not sure that this should happen in the reset state as well
+         RESET, IDLE, HALTED: begin
+            ugfifo_halt.deq;
+            rg_state <= HALTED;
+            if (rg_verbosity > 0) begin
+               $display ("DMA Copy Unit halt process finished, going to HALTED state");
+            end
+         end
+         META_RECEIVE_S2MM: begin
+            if (rg_verbosity > 1) begin
+               $display ("    in META_RECEIVE_S2MM");
+            end
+            if (axi4s_m_meta_ugshim_master.canPeek) begin
+               axi4s_m_meta_ugshim_master.drop;
+               if (rg_verbosity > 1) begin
+                  $display ("CHERI DMA Unit dropped s2mm meta flit: ", fshow (axi4s_m_meta_ugshim_master.peek));
+               end
+               if (axi4s_m_meta_ugshim_master.peek.tlast) begin
+                  rg_state <= COPYING;
+                  crg_dir[0] <= S2MM;
+                  if (rg_verbosity > 1) begin
+                     $display ("   finished dropping s2mm meta flits.");
+                  end
+               end
+            end
+         end
+         META_SEND_MM2S: begin
+            if (rg_verbosity > 1) begin
+               $display ("    in META_SEND_MM2S");
+            end
+            let is_last = rg_meta_counter == 4;
+            AXI4Stream_Flit #(sid_, sdata_, sdest_, suser_) flit = AXI4Stream_Flit {
+               tdata: zeroExtend (v_v_rg_bd[pack (MM2S)][pack (DMA_APP0) + zeroExtend (rg_meta_counter)].word),
+               tstrb: 0,
+               tkeep: ~0,
+               tlast: is_last,
+               tid:   0,
+               tdest: 0,
+               tuser: 0
+            };
+            axi4s_s_meta_ugshim_slave.put (flit);
+            rg_meta_counter <= rg_meta_counter + 1;
+            if (rg_verbosity > 1) begin
+               $display ("    produced rflit: ", fshow (flit));
+            end
+            if (is_last) begin
+               rg_state <= COPYING;
+               if (rg_verbosity > 1) begin
+                  $display ("    moving to COPYING state");
+               end
+            end
+         end
+         WAIT_FOR_FINAL_DEQ: begin
+            if (rg_verbosity > 1) begin
+               $display ("    in WAIT_FOR_FINAL_DEQ");
+            end
+            if (crg_dir[0] == S2MM) begin
+               if (rg_txion_in_flight) begin
+                  // we need to finish providing w flits
+                  if (ugshim_slave.w.canPut) begin
+                     rg_txion_counter <= rg_txion_counter + 1;
+                     let islast = rg_prev_arlen == rg_txion_counter;
+                     AXI4_WFlit #(data_, wuser_) dummy_wflit = AXI4_WFlit {
+                        wdata : ?,
+                        wstrb : 0,
+                        wlast : islast,
+                        wuser : 0
+                     };
+                     ugshim_slave.w.put (dummy_wflit);
+                     if (rg_verbosity > 1) begin
+                        $display ("    producing wflit: ", fshow (dummy_wflit));
+                     end
+                     if (islast) begin
+                        rg_txion_in_flight <= False;
+                        rg_bresp_required <= True;
+                        fifo_data.clear;
+                        if (rg_verbosity > 1) begin
+                           $display ("    finished current w txion");
+                        end
+                     end
+                  end
+               end else if (rg_bresp_required) begin
+                  // this is the last bresp, so we can just wait for it and halt
+                  if (ugshim_slave.b.canPeek) begin
+                     ugshim_slave.b.drop;
+                     rg_state <= HALTED;
+                     ugfifo_halt.deq;
+                     if (rg_verbosity > 1) begin
+                        $display ("    dropped b flit: ", fshow (ugshim_slave.b.peek));
+                        $display ("    going to HALTED");
+                     end
+                  end
+               end else begin
+                  // If we had not halted, we would be about to make the final
+                  // write request into memory; we can just not perform this
+                  // write and halt, since there is nothing more to get from
+                  // the stream
+                  rg_state <= HALTED;
+                  ugfifo_halt.deq;
+                  fifo_data.clear;
+                  if (rg_verbosity > 1) begin
+                     $display ("    not producing aw flit");
+                     $display ("    going to HALTED");
+                  end
+               end
+            end else begin
+               fifo_data.clear;
+               if (rg_stream_out_count < rg_buf_len && axi4s_s_data_ugshim_slave.canPut) begin
+                  AXI4Stream_Flit #(sid_, sdata_, sdest_, suser_) dummy_flit = AXI4Stream_Flit {
+                     tdata: ?,
+                     tstrb: 0,
+                     tkeep: ~0,
+                     tlast: True,
+                     tid: 0,
+                     tdest: 0,
+                     tuser: 0
+                  };
+                  axi4s_s_data_ugshim_slave.put (dummy_flit);
+                  rg_state <= HALTED;
+                  ugfifo_halt.deq;
+                  if (rg_verbosity > 1) begin
+                     $display ("    produced stream flit: ", fshow (dummy_flit));
+                     $display ("    going to HALTED");
+                  end
+               end else if (rg_stream_out_count >= rg_buf_len) begin
+                  rg_state <= HALTED;
+                  ugfifo_halt.deq;
+                  if (rg_verbosity > 1) begin
+                     $display ("    not producing stream flit");
+                     $display ("    going to HALTED");
+                  end
+               end
+            end
+         end
+         COPYING: begin
+            if (rg_verbosity > 1) begin
+               $display ("    in COPYING");
+            end
+            if (crg_dir[0] == S2MM) begin
+               // keep dequeueing until there's nothing left. then let
+               // WAIT_FOR_FINAL_DEQ to clean up
+               if (axi4s_m_data_ugshim_master.canPeek) begin
+                  axi4s_m_data_ugshim_master.drop;
+                  if (rg_verbosity > 1) begin
+                     $display ("    dropping data stream flit: ", fshow (axi4s_m_data_ugshim_master.peek));
+                  end
+                  if (axi4s_m_data_ugshim_master.peek.tlast) begin
+                     if (rg_verbosity > 1) begin
+                        $display ("    going to WAIT_FOR_FINAL_DEQ");
+                     end
+                     rg_state <= WAIT_FOR_FINAL_DEQ;
+                  end
+               end
+            end else begin
+               if (rg_stream_out_count < rg_buf_len && axi4s_s_data_ugshim_slave.canPut) begin
+                  // need to send last flit to stream
+                  fifo_data.clear;
+                  AXI4Stream_Flit #(sid_, sdata_, sdest_, suser_) dummy_flit = AXI4Stream_Flit {
+                     tdata: ?,
+                     tstrb: 0,
+                     tkeep: ~0,
+                     tlast: True,
+                     tid: 0,
+                     tdest: 0,
+                     tuser: 0
+                  };
+                  axi4s_s_data_ugshim_slave.put (dummy_flit);
+                  rg_stream_out_count <= rg_buf_len;
+                  if (rg_verbosity > 1) begin
+                     $display ("    producing stream data flit: ", fshow (dummy_flit));
+                  end
+               end
+               if (rg_txion_in_flight && ugshim_slave.r.canPeek) begin
+                  // need to clear all remaining read responses
+                  ugshim_slave.r.drop;
+                  if (rg_verbosity > 1) begin
+                     $display ("    dropping r flit: ", fshow (ugshim_slave.r.peek));
+                  end
+                  if (ugshim_slave.r.peek.rlast) begin
+                     rg_txion_in_flight <= False;
+                     if (rg_verbosity > 1) begin
+                        $display ("    setting rg_txion_in_flight to false");
+                     end
+                  end
+               end
+               if (!rg_txion_in_flight && rg_stream_out_count >= rg_buf_len) begin
+                  rg_state <= HALTED;
+                  ugfifo_halt.deq;
+                  if (rg_verbosity > 1) begin
+                     $display ("    goinng to HALTED");
+                  end
+               end
+            end
+         end
+      endcase
    endrule
 
 
@@ -760,7 +1040,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
       $display ("   fifo_data.notFull: ", fshow (fifo_data.notFull));
       $display ("   fifo_data.notEmpty: ", fshow (fifo_data.notEmpty));
       $display ("   fifo_data.count: ", fshow (fifo_data.count));
-      $display ("   axi4s_m_data_shim.master.canPeek: ", fshow (axi4s_m_data_shim.master.canPeek));
+      $display ("   axi4s_m_data_ugshim_master.canPeek: ", fshow (axi4s_m_data_ugshim_master.canPeek));
       $display ("   rg_buf_len: ", fshow (rg_buf_len));
       $display ("   rg_buf_cur: ", fshow (rg_buf_cur));
    endrule
@@ -773,14 +1053,14 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
       $display ("   fifo_data.count: ", fshow (fifo_data.count));
    endrule
 
-   rule rl_debug_cannot_enqueue (shim.slave.r.canPeek && !fifo_data.notFull);
+   rule rl_debug_cannot_enqueue (ugshim_slave.r.canPeek && !fifo_data.notFull);
       $display ("DMA Copy Unit: ERROR: we have received data from memory but can't enqueue it");
       $display ("                      Something went wrong the last time we made a request; we");
       $display ("                      thought we would have enough space for the data but we didn't");
    endrule
 
    // detect bresp when not in a correct state
-   rule rl_detect_incorrect_bresp (shim.slave.b.canPeek
+   rule rl_detect_incorrect_bresp (ugshim_slave.b.canPeek
                                    && (rg_state == IDLE
                                        || rg_state == RESET
                                        || !rg_bresp_required));
@@ -797,10 +1077,11 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    rule rl_debug_mm2s_throughput_print (rg_mm2s_throughput
                                         && rg_verbosity > 1);
       $display ("%m tock");
-      $display ("    axi4s_s_data_shim.slave.canPut: ", fshow (axi4s_s_data_shim.slave.canPut));
+      $display ("    axi4s_s_data_ugshim_slave.canPut: ", fshow (axi4s_s_data_ugshim_slave.canPut));
       $display ("    fifo_data.notFull: ", fshow (fifo_data.notFull));
       $display ("    fifo_data.notEmpty: ", fshow (fifo_data.notEmpty));
-      $display ("    shim.slave.r.canPeek: ", fshow (shim.slave.r.canPeek));
+      $display ("    ugshim_slave.r.canPeek: ", fshow (ugshim_slave.r.canPeek));
+      $display ("    rg_state: ", fshow (rg_state));
    endrule
    rule rl_debug_mm2s_throughput_end (axi4s_s_data_shim.master.canPeek
                                       && axi4s_s_data_shim.master.peek.tlast
@@ -810,7 +1091,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
 
 
    Reg #(Bool) rg_s2mm_throughput <- mkReg (False);
-   rule rl_debug_s2mm_throughput_start (axi4s_m_data_shim.master.canPeek
+   rule rl_debug_s2mm_throughput_start (axi4s_m_data_ugshim_master.canPeek
                                         && !rg_s2mm_throughput
                                         && rg_verbosity > 1);
       $display ("%m tick 1");
@@ -819,13 +1100,16 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    rule rl_debug_s2mm_throughput_print (rg_s2mm_throughput
                                         && rg_verbosity > 1);
       $display ("%m tick");
-      $display ("    axi4s_m_data_shim.master.canPeek: ", fshow (axi4s_m_data_shim.master.canPeek));
+      $display ("    axi4s_m_meta_ugshim_master.canPeek: ", fshow (axi4s_m_meta_ugshim_master.canPeek));
+      $display ("    axi4s_m_data_ugshim_master.canPeek: ", fshow (axi4s_m_data_ugshim_master.canPeek));
       $display ("    fifo_data.notFull: ", fshow (fifo_data.notFull));
       $display ("    fifo_data.notEmpty: ", fshow (fifo_data.notEmpty));
-      $display ("    shim.slave.w.canPut: ", fshow (shim.slave.w.canPut));
+      $display ("    ugshim_slave.w.canPut: ", fshow (ugshim_slave.w.canPut));
+      $display ("    rg_state: ", fshow (rg_state));
+      $display ("    rg_meta_counter: ", fshow (rg_meta_counter));
    endrule
-   rule rl_debug_s2mm_throughput_end (axi4s_m_data_shim.master.canPeek
-                                      && axi4s_m_data_shim.master.peek.tlast
+   rule rl_debug_s2mm_throughput_end (axi4s_m_data_ugshim_master.canPeek
+                                      && axi4s_m_data_ugshim_master.peek.tlast
                                       && rg_verbosity > 1);
       rg_s2mm_throughput <= False;
    endrule
@@ -865,7 +1149,9 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
          tdest: 0,
          tuser: 0
       };
-      axi4s_s_meta_shim.slave.put (flit);
+      if (axi4s_s_meta_ugshim_slave.canPut) begin
+         axi4s_s_meta_ugshim_slave.put (flit);
+      end
    endmethod
 
    method Maybe #(DMA_Dir) end_trigger = rw_end_trigger.wget;
@@ -887,6 +1173,28 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
          $display ("    old state: ", fshow (rg_state));
       end
    endmethod
+
+   interface Server srv_halt;
+      interface Put request;
+         method Action put (Bit #(0) none) if (ugfifo_halt.notFull);
+            if (rg_verbosity > 0) begin
+               $display ("DMA Copy Unit Halt request received");
+            end
+            ugfifo_halt.enq (?);
+         endmethod
+      endinterface
+      interface Get response;
+         method ActionValue #(Bit #(0)) get if (!ugfifo_halt.notEmpty);
+            if (rg_verbosity > 0) begin
+               $display ("DMA Copy Unit Halt response sent");
+            end
+            return (?);
+         endmethod
+      endinterface
+   endinterface
+
+   method Maybe #(DMA_Err_Cause) enq_halt_o = rw_enq_halt_o.wget;
+
 endmodule
 
 

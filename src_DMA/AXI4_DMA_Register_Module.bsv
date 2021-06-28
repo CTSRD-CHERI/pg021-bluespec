@@ -1,7 +1,10 @@
 package AXI4_DMA_Register_Module;
 
 // Bluespec imports
+import FIFOF :: *;
 import Vector :: *;
+import GetPut :: *;
+import ClientServer :: *;
 
 // AXI imports
 import AXI :: *;
@@ -18,7 +21,8 @@ typedef enum {
    RESET,
    HALTED,
    RUNNING,
-   WAIT_SECOND_WRITE
+   WRITE_2,
+   READ_2
 } Reg_State deriving (Bits, FShow, Eq);
 
 interface AXI4_DMA_Register_Module_IFC #(numeric type id_
@@ -43,6 +47,8 @@ interface AXI4_DMA_Register_Module_IFC #(numeric type id_
    (* always_ready *)
    method Bool get_halt_to_idle;
    method Action halt_to_idle;
+
+   interface Server #(Bit #(0), Bit #(0)) srv_halt;
 endinterface
 
 
@@ -55,7 +61,8 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
                                             , Add #(c__, data_, 128)
                                             , Add #(d__, data_, 129)
                                             , Add #(e__, c__, 129)
-                                            , Add #(f__, wuser_, 1));
+                                            , Add #(f__, 1, wuser_)
+                                            , Add #(g__, 1, ruser_));
 
    // TODO not sure if this is the cleanest way to specify this in Bluespec.
    // Would like to have a compile-time variable here which contains the trigger
@@ -73,7 +80,7 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
                  aruser_, ruser_) serialiser <- mkSerialiser (shim.master);
 
    Reg #(Reg_State) rg_state <- mkReg (RESET);
-   Reg #(Reg_State) rg_write2_state <- mkRegU;
+   Reg #(Reg_State) rg_rw2_state <- mkRegU;
 
    // aggregate the capability that is currently being written
    Reg #(CapMem) rg_cap <- mkReg (nullCap);
@@ -83,6 +90,8 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
    RWire #(DMA_Dir) rw_trigger <- mkRWire;
 
    PulseWire pw_halt_to_idle <- mkPulseWire;
+
+   FIFOF #(Bit #(0)) fifo_halt <- mkUGFIFOF;
 
    rule rl_debug;
       if (rg_verbosity > 2) begin
@@ -149,9 +158,9 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
          if (is_cap_reg) begin
             // TODO this assumes 64-bit-wide bus
             rg_cap <= zeroExtend (wflit.wdata);
-            rg_cap_valid <= zeroExtend (wflit.wuser);
-            rg_write2_state <= rg_state;
-            rg_state <= WAIT_SECOND_WRITE;
+            rg_cap_valid <= truncate (wflit.wuser);
+            rg_rw2_state <= rg_state;
+            rg_state <= WRITE_2;
          end else begin
             dma_int_reg.external_write (idx, newval);
          end
@@ -254,7 +263,7 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
       end
    endrule
 
-   rule rl_handle_write_2 (rg_state == WAIT_SECOND_WRITE
+   rule rl_handle_write_2 (rg_state == WRITE_2
                            && serialiser.aw.canPeek
                            && serialiser.w.canPeek);
       let awflit = serialiser.aw.peek;
@@ -271,7 +280,7 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
       serialiser.w.drop;
 
       // TODO this assumes that the bus is 64-bits and a capability is 128-bits
-      Bit #(1) is_valid = zeroExtend (wflit.wuser) & rg_cap_valid;
+      Bit #(1) is_valid = truncate (wflit.wuser) & rg_cap_valid;
       CapMem newCap = unpack ({is_valid, // only valid if both flits had wuser == 1
                                wflit.wdata,
                                truncate(rg_cap)});
@@ -287,18 +296,20 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
       if (rg_verbosity > 0) begin
          $display ("wrote capability into rg_cap");
          $display ("    new cap: ", fshow (newCap));
+         CapPipe newCapFat = cast (newCap);
+         $display ("    new cap expanded: ", fshow (newCapFat));
          $display ("    index: ", fshow (idx));
-         $display ("    new state: ", fshow (rg_write2_state));
+         $display ("    new state: ", fshow (rg_rw2_state));
       end
-      rg_state <= rg_write2_state;
+      rg_state <= rg_rw2_state;
    endrule
 
+   // TODO behaviour is different with capability reads and writes
    // behaviour: only accept single-flit reads where the size is DMA_Reg_Word-sized
    //            and the address is 32bit aligned
    rule rl_handle_read ((rg_state == RUNNING
                          || rg_state == HALTED)
                         && serialiser.ar.canPeek);
-      serialiser.ar.drop;
       let arflit = serialiser.ar.peek;
       let is_aligned = arflit.araddr[1:0] == 0;
       let is_single_flit = arflit.arlen == 0;
@@ -312,8 +323,17 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
       let word_lower = arflit.araddr[2] == 1'b0;
 
       // We support only accesses that are properly aligned and 32bit wide
+      // TODO this changes when we have capabilities
       DMA_Reg_Index idx = unpack (truncate (arflit.araddr >> 2));
       DMA_Reg_Word reg_val = dma_int_reg.external_read (idx);
+
+      // TODO handle reading capability registers
+      let is_cap_read = arflit.arlen == 1
+                        && (idx == DMA_MM2S_CURDESC_CAP
+                            || idx == DMA_S2MM_CURDESC_CAP)
+                        && arflit.arsize == 8;
+
+
 
       // TODO for now we always return OKAY in the response field
       //      we should return a SLVERR when the request is not valid
@@ -323,7 +343,39 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
                                                           , rresp: OKAY
                                                           , rlast: True
                                                           , ruser: 0 };
-      if (is_valid_request) begin
+
+      if (is_cap_read) begin
+         let reg_cap_val = ?;
+         if (idx == DMA_MM2S_CURDESC_CAP) begin
+            reg_cap_val = dma_int_reg.mm2s_curdesc_cap;
+         end else begin
+            reg_cap_val = dma_int_reg.s2mm_curdesc_cap;
+         end
+         Bit #(1) reg_cap_tag = truncateLSB (reg_cap_val);
+         Bit #(TSub #(SizeOf #(CapMem), 1)) reg_cap_data = truncate (reg_cap_val);
+         rflit.rdata = truncate (reg_cap_data);
+         rflit.ruser = zeroExtend (reg_cap_tag);
+         rflit.rlast = False;
+
+         rg_state <= READ_2;
+         rg_rw2_state <= rg_state;
+
+         // TODO deal with 32 bits, where we put the full capability in one flit
+         // serialiser.ar.drop;
+      end else begin
+         rflit.rdata = word_lower ? zeroExtend (reg_val) : {reg_val, 0};
+         rflit.ruser = 0;
+         serialiser.ar.drop;
+      end
+
+
+      if (is_cap_read) begin
+         if (rg_verbosity > 0) begin
+            $display ("dma slave cap read request succeeded for register ", fshow (idx));
+            $display ("    flit: ", fshow (arflit));
+            $display ("    return flit: ", fshow (rflit));
+         end
+      end else if (is_valid_request) begin
          if (rg_verbosity > 0) begin
             $display ("dma slave read request succeeded for register ", fshow (idx),
                       ", returning value ", fshow (reg_val));
@@ -331,16 +383,55 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
          end
       end else begin
          $display ("dma slave read request failed for register ", fshow (idx));
+         $display ("    address: ", fshow (arflit.araddr));
          $display ("    is_aligned: ", fshow (is_aligned));
-         $display ("    is_single_flit: ", fshow (is_aligned));
+         $display ("    is_single_flit: ", fshow (is_single_flit));
          $display ("    is_correct_burst_type: ", fshow (is_correct_burst_type));
          $display ("    is_correct_size: ", fshow (is_correct_size));
          if (!is_correct_size) begin
             $display ("        flit size: ", fshow (arflit.arsize));
          end
+         $display ("    flit: ", fshow (arflit));
       end
 
       serialiser.r.put (rflit);
+   endrule
+
+   // only executes when fabric size < cap size
+   rule rl_handle_read_2 (rg_state == READ_2
+                          && serialiser.ar.canPeek // should be true from last rule
+                          && serialiser.r.canPut);
+      serialiser.ar.drop;
+      let arflit = serialiser.ar.peek;
+      DMA_Reg_Index idx = unpack (truncate (arflit.araddr >> 2));
+      let reg_cap_val = ?;
+      if (idx == DMA_MM2S_CURDESC_CAP) begin
+         reg_cap_val = dma_int_reg.mm2s_curdesc_cap;
+      end else begin
+         reg_cap_val = dma_int_reg.s2mm_curdesc_cap;
+      end
+      Bit #(1) reg_cap_tag = truncateLSB (reg_cap_val);
+      Bit #(TSub #(SizeOf #(CapMem), 1)) reg_cap_data = truncate (reg_cap_val);
+
+      AXI4_RFlit #(id_, data_, ruser_) rflit = AXI4_RFlit { rid: arflit.arid
+                                                          , rdata: truncateLSB (reg_cap_data)
+                                                          //, rresp: is_valid_request ? OKAY : SLVERR
+                                                          , rresp: OKAY
+                                                          , rlast: True
+                                                          , ruser: zeroExtend (reg_cap_tag) };
+
+
+      serialiser.r.put (rflit);
+      rg_state <= rg_rw2_state;
+
+      if (rg_verbosity > 0) begin
+         $display ("axi dma cap register read 2 succeeded");
+         $display ("    flit: ", fshow (arflit));
+         $display ("    return flit: ", fshow (rflit));
+         CapPipe ret_cap_fat = cast (reg_cap_val);
+         $display ("    returned cap: ", fshow (ret_cap_fat));
+         $display ("    new state: ", fshow (rg_rw2_state));
+      end
    endrule
 
 
@@ -367,6 +458,30 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
          $display ("    old state: ", fshow (rg_state));
       end
    endmethod
+
+   interface Server srv_halt;
+      interface Put request;
+         method Action put (Bit #(0) none);
+            if (rg_verbosity > 0) begin
+               $display ("DMA Register Module Halt request received");
+            end
+            if (rg_state == WRITE_2) begin
+               // transition to HALTED state after the current write is finished
+               rg_rw2_state <= HALTED;
+            end else begin
+               rg_state <= HALTED;
+            end
+         endmethod
+      endinterface
+      interface Get response;
+         method ActionValue #(Bit #(0)) get;
+            if (rg_verbosity > 0) begin
+               $display ("DMA Register Module Halt response sent");
+            end
+            return (?);
+         endmethod
+      endinterface
+   endinterface
 endmodule
 
 endpackage

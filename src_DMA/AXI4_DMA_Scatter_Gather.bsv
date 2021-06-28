@@ -4,13 +4,19 @@ package AXI4_DMA_Scatter_Gather;
 import FIFOF :: *;
 import Vector :: *;
 import DReg :: *;
+import GetPut :: *;
+import ClientServer :: *;
 
 // AXI imports
 import AXI4 :: *;
 import SourceSink :: *;
+import Connectable :: *;
 
 // local imports
 import AXI4_DMA_Types :: *;
+
+import CHERICap :: *;
+import CHERICC_Fat :: *;
 
 interface AXI4_DMA_Scatter_Gather_IFC#(numeric type id_,
                                        numeric type addr_,
@@ -63,6 +69,13 @@ interface AXI4_DMA_Scatter_Gather_IFC#(numeric type id_,
    // Used to transition the Scatter Gather Unit from the Halted state
    // to the Idle state
    method Action halt_to_idle;
+
+   // Transitions the Scatter Gather unit to halted mode when something goes wrong
+   interface Server #(Bit #(0), Bit #(0)) srv_halt;
+
+   // Something went wrong in the scatter gather unit; signal appropriately
+   (* always_ready *)
+   method Maybe #(DMA_Err_Cause) enq_halt_o;
 endinterface
 
 typedef enum {
@@ -88,6 +101,12 @@ typedef enum {
 //  the address field is either smaller than or greater than the internal
 //  address registers. However, I'm not sure how to write the code for this,
 //  so here it is assumed that the addresses are >= the DMA word size
+/*
+ * Some notes on reading/writing capabilities: In order to read/write
+   capabilities, the tag controller requires 64-bit accesses. This means
+   that any capabilities that we put in the buffer descriptors must be read
+   and written using 64-bit flits, which might cause some issues here
+ */
 module mkAXI4_DMA_Scatter_Gather
          #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) v_v_rg_bd)
           (AXI4_DMA_Scatter_Gather_IFC #(id_, addr_, data_,
@@ -109,6 +128,8 @@ module mkAXI4_DMA_Scatter_Gather
    let read_app_words = True;
 
    Reg #(DMA_SG_State) rg_state <- mkReg(DMA_HALTED);
+
+   FIFOF #(Bit #(0)) ugfifo_halt <- mkUGFIFOF1;
 
    // The start address of the current buffer descriptor
    Reg #(Bit #(addr_)) rg_addr_bd_start <- mkRegU;
@@ -140,6 +161,7 @@ module mkAXI4_DMA_Scatter_Gather
    Reg #(Bool) drg_sg_finished <- mkDReg (False);
 
    RWire #(DMA_Dir) rw_trigger_interrupt <- mkRWire;
+   RWire #(DMA_Err_Cause) rw_enq_halt_o <- mkRWire;
 
    rule rl_debug_finished (drg_sg_finished);
       if (rg_verbosity > 0) begin
@@ -149,6 +171,7 @@ module mkAXI4_DMA_Scatter_Gather
    endrule
 
    let shim <- mkAXI4ShimFF;
+   let ugshim_slave <- toUnguarded_AXI4_Slave (shim.slave);
 
    Bit #(id_) base_id = 0;
 
@@ -256,7 +279,8 @@ module mkAXI4_DMA_Scatter_Gather
    endfunction
 
 
-   rule rl_reset (rg_state == DMA_RESET);
+   rule rl_reset (rg_state == DMA_RESET
+                  && !ugfifo_halt.notEmpty);
       if (rg_verbosity > 0) begin
          $display ("AXI4 DMA SG Reset");
       end
@@ -281,9 +305,14 @@ module mkAXI4_DMA_Scatter_Gather
    rule rl_handle_read_rsp ((rg_state == DMA_MAIN_READ_RSP_OUTSTANDING
                              || (rg_state == DMA_APP_READ_RSP_OUTSTANDING
                                  && read_app_words))
-                            && shim.slave.r.canPeek);
+                            && ugshim_slave.r.canPeek
+                            && ugshim_slave.ar.canPut
+                            && !ugfifo_halt.notEmpty);
+      if (rg_verbosity > 1) begin
+         $display ("rl_handle_read_rsp");
+      end
       let rflit = shim.slave.r.peek;
-      shim.slave.r.drop;
+      ugshim_slave.r.drop;
       rg_addr_bd_cur <= rg_addr_bd_incr;
       let rsp_count_new = rg_rsp_count;
       DMA_BD_Index next_bd_index = unpack (pack (rg_bd_index)
@@ -307,7 +336,8 @@ module mkAXI4_DMA_Scatter_Gather
                Bit #(TLog #(data_)) offset = base_offset + fromInteger (i) * 32;
                DMA_BD_Word word_to_write = unpack (rflit.rdata[offset+31:offset]);
                // TODO multiple user bits?
-               Bool tag_to_write = rflit.ruser == signExtend (1'b1);
+               Bit #(ruser_) expected_ruser = signExtend (1'b1);
+               Bool tag_to_write = truncate (rflit.ruser) == expected_ruser;
 
                DMA_BD_TagWord val_to_write = DMA_BD_TagWord { word: word_to_write
                                                             , tag: tag_to_write};
@@ -317,6 +347,7 @@ module mkAXI4_DMA_Scatter_Gather
                   $display ("AXI DMA SG Register Write");
                   $display ("    register: ", fshow (reg_to_write));
                   $display ("    value: ", fshow (val_to_write));
+                  $display ("    expected_ruser: ", fshow (expected_ruser));
                end
             end
          end
@@ -325,9 +356,6 @@ module mkAXI4_DMA_Scatter_Gather
          end
          rsp_count_new = rg_rsp_count + 1;
          rg_bd_index <= next_bd_index;
-
-         // user field should be empty for now
-         // TODO handle user field when capabilities are required
       end
 
       if (rflit.rresp == EXOKAY) begin
@@ -340,6 +368,11 @@ module mkAXI4_DMA_Scatter_Gather
          // We should set some fields somewhere, but for now we just do nothing
          // TODO handle DMA scatter-gather read errors
          $display ("AXI4 SG Unit: ERROR IN DMA: ", fshow(rflit.rresp));
+         $display ("    flit: ", fshow (rflit));
+         let cherierr = truncateLSB (rflit.ruser) == 1'b1;
+         rw_enq_halt_o.wset ( cherierr              ? CHERIERR
+                            : rflit.rresp == DECERR ? DECERR
+                                                    : SLVERR);
       end
 
       if (rflit.rlast) begin
@@ -355,7 +388,7 @@ module mkAXI4_DMA_Scatter_Gather
             end
 
             match {.arflit, .len} = axi4_ar_burst_flit (rg_addr_bd_incr, False, True);
-            shim.slave.ar.put (arflit);
+            ugshim_slave.ar.put (arflit);
             if (rg_verbosity > 0) begin
                $display ("AXI4 SG Unit: DMA sent AR flit to read app words");
                $display ("    flit: ", fshow(arflit));
@@ -412,15 +445,18 @@ module mkAXI4_DMA_Scatter_Gather
 
    endrule
 
-   rule rl_write (rg_state == DMA_MAIN_WRITE_START
-                  || rg_state == DMA_APP_WRITE_START);
+   rule rl_write ((rg_state == DMA_MAIN_WRITE_START
+                   || rg_state == DMA_APP_WRITE_START)
+                  && ugshim_slave.aw.canPut
+                  && ugshim_slave.w.canPut
+                  && !ugfifo_halt.notEmpty);
       // TODO at the moment some transactions are wasted. Maybe only write the words
       // that have changed? This would require more internal state, not sure how it would
       // affect bus contention
       // NOTE burst length = awlen + 1
       let write_app = rg_state == DMA_APP_WRITE_START;
       // TODO remove hardwired 5?
-      AXI4_Len len = write_app ? 5    // write only the application words
+      AXI4_Len len = write_app ? 8    // write only the application words
                                  - 1  // burst size is arlen + 1
                                : fromInteger (valueOf (DMA_Num_Words))
                                  - 5  // don't write application words
@@ -441,7 +477,7 @@ module mkAXI4_DMA_Scatter_Gather
          awregion : 0,
          awuser   : 0
       };
-      shim.slave.aw.put(awflit);
+      ugshim_slave.aw.put(awflit);
       $display ("aw put: ", fshow (awflit));
 
       // this handles the 32bit and 64bit cases
@@ -462,7 +498,7 @@ module mkAXI4_DMA_Scatter_Gather
          wlast : False,
          wuser : 0
       };
-      shim.slave.w.put(wflit);
+      ugshim_slave.w.put(wflit);
       rg_bd_index <= unpack (pack (rg_bd_index) + 1);
       rg_addr_bd_cur <= rg_addr_bd_incr;
       rg_req_len <= zeroExtend (len);
@@ -482,8 +518,10 @@ module mkAXI4_DMA_Scatter_Gather
                             : DMA_MAIN_WRITE_LOOP;
    endrule
 
-   rule rl_write_loop (rg_state == DMA_MAIN_WRITE_LOOP
-                       || rg_state == DMA_APP_WRITE_LOOP);
+   rule rl_write_loop ((rg_state == DMA_MAIN_WRITE_LOOP
+                        || rg_state == DMA_APP_WRITE_LOOP)
+                       && ugshim_slave.w.canPut
+                       && !ugfifo_halt.notEmpty);
       Bool islast = rg_rsp_count == rg_req_len;
       // this handles the 32bit and 64bit cases
       // TODO handle other cases?
@@ -501,10 +539,11 @@ module mkAXI4_DMA_Scatter_Gather
          wlast : islast,
          wuser : 0
       };
-      shim.slave.w.put(wflit);
+      ugshim_slave.w.put(wflit);
       if (rg_verbosity > 1) begin
          $display ("AXI4 SG Unit: rl_write_loop:");
          $display ("   data flit: ", fshow(wflit));
+         $display ("   index: ", fshow (rg_bd_index));
       end
 
       if (islast) begin
@@ -529,20 +568,21 @@ module mkAXI4_DMA_Scatter_Gather
       end
    endrule
 
-   rule rl_handle_b_canpeek (shim.slave.b.canPeek);
+   rule rl_handle_b_canpeek (ugshim_slave.b.canPeek);
       if (rg_verbosity > 1) begin
          $display ("write response received");
          $display ("state: ", fshow (rg_state));
-         $display ("response: ", fshow (shim.slave.b.peek));
+         $display ("response: ", fshow (ugshim_slave.b.peek));
       end
    endrule
 
    // handle receipt of outstanding write response
    rule rl_handle_write_rsp ((rg_state == DMA_MAIN_WRITE_RSP_OUTSTANDING
                               || rg_state == DMA_APP_WRITE_RSP_OUTSTANDING)
-                             && shim.slave.b.canPeek);
+                             && ugshim_slave.b.canPeek
+                             && !ugfifo_halt.notEmpty);
       let bflit = shim.slave.b.peek;
-      shim.slave.b.drop;
+      ugshim_slave.b.drop;
 
       let iserr = False;
 
@@ -562,11 +602,17 @@ module mkAXI4_DMA_Scatter_Gather
             SLVERR: begin
                $display ("AXI4 SG Unit: ERROR: something went wrong in the DMA write response");
                $display ("   got a slave error");
+               let cherierr = truncateLSB (bflit.buser) == 1'b1;
+               rw_enq_halt_o.wset (cherierr ? CHERIERR
+                                            : SLVERR);
             end
 
             DECERR: begin
                $display ("AXI4 SG Unit: ERROR: something went wrong in the DMA write response");
                $display ("   got a decoding error");
+               let cherierr = truncateLSB (bflit.buser) == 1'b1;
+               rw_enq_halt_o.wset (cherierr ? CHERIERR
+                                            : DECERR);
             end
 
             default: begin
@@ -592,18 +638,87 @@ module mkAXI4_DMA_Scatter_Gather
       end
    endrule
 
+   rule rl_handle_halt (ugfifo_halt.notEmpty);
+      if (rg_verbosity > 0) begin
+         $display ("CHERI SG Unit rl_handle_halt");
+      end
+      case (rg_state)
+         DMA_RESET, DMA_IDLE, DMA_HALTED, DMA_MAIN_WRITE_START, DMA_APP_WRITE_START: begin
+            // no state needs to be handled; just go to halted
+            ugfifo_halt.deq;
+            rg_state <= DMA_HALTED;
+            if (rg_verbosity > 1) begin
+               $display ("    No state needs handled, going straight to halted");
+            end
+         end
+         DMA_MAIN_READ_RSP_OUTSTANDING, DMA_APP_READ_RSP_OUTSTANDING: begin
+            if (ugshim_slave.r.canPeek) begin
+               if (rg_verbosity > 1) begin
+                  $display ("    Was reading, dropping flit: ", fshow (ugshim_slave.r.peek));
+               end
+               ugshim_slave.r.drop;
+               if (ugshim_slave.r.peek.rlast) begin
+                  rg_state <= DMA_HALTED;
+                  ugfifo_halt.deq;
+                  if (rg_verbosity > 1) begin
+                     $display ("    Dropped last flit");
+                  end
+               end
+            end
+         end
+         DMA_MAIN_WRITE_RSP_OUTSTANDING, DMA_APP_WRITE_RSP_OUTSTANDING: begin
+            if (ugshim_slave.b.canPeek) begin
+               ugshim_slave.b.drop;
+               rg_state <= DMA_HALTED;
+               ugfifo_halt.deq;
+               if (rg_verbosity > 1) begin
+                  $display ("    Was waiting for write response, dropping flit: ", fshow (ugshim_slave.b.peek));
+               end
+            end
+         end
+         DMA_MAIN_WRITE_LOOP, DMA_APP_WRITE_LOOP: begin
+            Bool islast = rg_rsp_count == rg_req_len;
+            AXI4_WFlit #(data_, wuser_) dummy_wflit = AXI4_WFlit {
+               wdata : ?,
+               wstrb : 0,
+               wlast : islast,
+               wuser : 0
+            };
+            if (rg_verbosity > 1) begin
+               $display ("    Was writing, sending flit: ", fshow (dummy_wflit));
+               $display ("    count: ", fshow (rg_rsp_count));
+            end
+
+            rg_rsp_count <= rg_rsp_count + 1;
+            if (islast) begin
+               // need to wait for B response
+               rg_state <= DMA_MAIN_WRITE_RSP_OUTSTANDING;
+               if (rg_verbosity > 1) begin
+                  $display ("    Last write flit sent");
+               end
+            end
+         end
+      endcase
+   endrule
 
    // detect issues
-   rule rl_detect_rresp_in_wrong_state (shim.slave.r.canPeek
+   rule rl_detect_rresp_in_wrong_state (ugshim_slave.r.canPeek
                                         && rg_state != DMA_MAIN_READ_RSP_OUTSTANDING
                                         && rg_state != DMA_APP_READ_RSP_OUTSTANDING);
       $display ("AXI4 SG Unit: ERROR: DMA detected read response when DMA is in the wrong state");
    endrule
 
-   rule rl_detect_wresp_in_wrong_state (shim.slave.b.canPeek
+   rule rl_detect_wresp_in_wrong_state (ugshim_slave.b.canPeek
                                         && rg_state != DMA_MAIN_WRITE_RSP_OUTSTANDING
                                         && rg_state != DMA_APP_WRITE_RSP_OUTSTANDING);
       $display ("AXI4 SG Unit: ERROR: DMA detected write response when DMA is in the wrong state");
+   endrule
+
+   rule rl_debug_r_canpeek (ugshim_slave.r.canPeek);
+      $display ("SG canpeek");
+      $display ("    state: ", fshow (rg_state));
+      $display ("    read_app_words: ", fshow (read_app_words));
+      $display ("    input flit: ", fshow (ugshim_slave.r.peek));
    endrule
 
 
@@ -625,7 +740,7 @@ module mkAXI4_DMA_Scatter_Gather
    /*
     * Request that a BD be read from memory and written into the registers
     */
-   method Action bd_read_from_mem (DMA_Dir dir, Bit #(addr_) start_addr) if (shim.slave.ar.canPut
+   method Action bd_read_from_mem (DMA_Dir dir, Bit #(addr_) start_addr) if (ugshim_slave.ar.canPut
                                                                              && rg_state == DMA_IDLE);
 
       // update direction
@@ -634,7 +749,7 @@ module mkAXI4_DMA_Scatter_Gather
       // bus transaction
       // don't read app words yet
       match {.arflit, .len} = axi4_ar_burst_flit (start_addr, True, True);
-      shim.slave.ar.put (arflit);
+      ugshim_slave.ar.put (arflit);
       if (rg_verbosity > 0) begin
          $display ("AXI4 SG Unit: DMA sent AR flit: ", fshow(arflit));
       end
@@ -655,8 +770,7 @@ module mkAXI4_DMA_Scatter_Gather
     * Request that the BD currently held in the local registers be written out to
     * main memory.
     */
-   method Action bd_write_to_mem (DMA_Dir dir, Bit #(addr_) start_addr) if (shim.slave.ar.canPut
-                                                                            && rg_state == DMA_IDLE);
+   method Action bd_write_to_mem (DMA_Dir dir, Bit #(addr_) start_addr) if (rg_state == DMA_IDLE);
       // update direction
       crg_dir[0] <= dir;
 
@@ -665,17 +779,18 @@ module mkAXI4_DMA_Scatter_Gather
          $display ("              write value: ", fshow(readVReg (v_v_rg_bd[pack (dir)])));
       end
 
-      rg_addr_bd_start <= start_addr;
-      rg_addr_bd_cur <= start_addr;
-      rg_state <= DMA_MAIN_WRITE_START;
-      rg_bd_index <= minBound;
+      rg_addr_bd_start <= start_addr + 'h20;
+      rg_addr_bd_cur <= start_addr + 'h20;
+      rg_state <= DMA_APP_WRITE_START;
+      // TODO this will break with 32bit
+      rg_bd_index <= DMA_CONTROL;
       rg_rsp_count <= 0;
    endmethod
 
    // TODO update this to handle 64-bit
    // (ie use NXTDESC_MSB)
    // This is currently unused and untested
-   method Action bd_fetch_next (DMA_Dir dir) if (shim.slave.ar.canPut
+   method Action bd_fetch_next (DMA_Dir dir) if (ugshim_slave.ar.canPut
                                                  && rg_state == DMA_IDLE);
       // update direction
       crg_dir[0] <= dir;
@@ -690,7 +805,7 @@ module mkAXI4_DMA_Scatter_Gather
       // bus transaction
       // don't read app words yet
       match {.arflit, .len} = axi4_ar_burst_flit (addr, True, True);
-      shim.slave.ar.put (arflit);
+      ugshim_slave.ar.put (arflit);
 
       // internal bookkeeping
       rg_addr_bd_start <= addr;
@@ -738,6 +853,27 @@ module mkAXI4_DMA_Scatter_Gather
          $display ("    old state: ", fshow (rg_state));
       end
    endmethod
+
+   interface Server srv_halt;
+      interface Put request;
+         method Action put (Bit #(0) none) if (ugfifo_halt.notFull);
+            if (rg_verbosity > 0) begin
+               $display ("DMA Scatter Gather Halt request received");
+            end
+            ugfifo_halt.enq (?);
+         endmethod
+      endinterface
+      interface Get response;
+         method ActionValue #(Bit #(0)) get if (!ugfifo_halt.notEmpty);
+            if (rg_verbosity > 0) begin
+               $display ("DMA Scatter Gather Halt response sent");
+            end
+            return (?);
+         endmethod
+      endinterface
+   endinterface
+
+   method Maybe #(DMA_Err_Cause) enq_halt_o = rw_enq_halt_o.wget;
 endmodule
 
 

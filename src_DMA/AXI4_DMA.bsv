@@ -10,6 +10,8 @@ import AXI4Stream_Types :: *;
 import AXI4Stream_Utils :: *;
 import Connectable :: *;
 import SourceSink :: *;
+import GetPut :: *;
+import ClientServer :: *;
 
 // local imports
 import AXI4_DMA_Scatter_Gather   :: *;
@@ -20,12 +22,14 @@ import AXI4_DMA_Internal_Reg_Module :: *;
 import AXI4_DMA_Utils :: *;
 import AXI4_DMA_CHERI_Checker :: *;
 
+import CHERICap :: *;
+import CHERICC_Fat :: *;
+
 typedef enum {
    RESET,
+   HALTING_WAIT_RSP,
    HALTED,
-   IDLE,
-   MM2S,
-   S2MM
+   IDLE
 } DMA_State deriving (Bits, FShow, Eq);
 
 interface AXI4_DMA_IFC #(numeric type mid_,  // master id
@@ -91,7 +95,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                            , Add #(m__, 4, TDiv#(sdata_, 8))
                            , Add #(n__, 32, sdata_)
                            , Add #(o__, addr_, 64)
-                           , Add #(p__, wuser_, 1)
+                           , Add #(p__, 1, wuser_)
                            , Add #(q__, 1, ruser_)
                            , Add #(r__, 7, addr_)
                            );
@@ -156,6 +160,8 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    // FIFO containing triggers from the Copy Unit
    FIFOF #(DMA_Dir) fifo_copy_unit_end_trigger <- mkFIFOF1;
 
+   FIFOF #(DMA_Err) fifo_dma_err <- mkFIFOF;
+
    Reg #(Bit #(64)) rg_counter <- mkReg (0);
 
    function Action fa_reset;
@@ -194,11 +200,11 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
       rg_state <= HALTED;
    endrule
 
-   rule rl_increment_counter (rg_state != RESET
-                              && rg_state != HALTED);
+   rule rl_increment_counter (rg_state == IDLE);
       rg_counter <= rg_counter + 1;
    endrule
 
+   (* conflict_free="dma_reg_rl_handle_write,rl_debug_halt_to_idle" *)
    rule rl_debug_halt_to_idle (dma_reg.get_halt_to_idle);
       if (rg_verbosity > 0) begin
          $display ("toplevel received halt to idle");
@@ -229,8 +235,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    // Handle enqueueing triggers received from the Register Unit
    // These happen when the tail descriptor registers are written to
    // with a value that causes us to have to do something
-   rule rl_enq_reg_trigger (rg_state != HALTED
-                            && rg_state != RESET
+   rule rl_enq_reg_trigger (rg_state == IDLE
                             && isValid (dma_reg.trigger));
       let dir = fromMaybe (?, dma_reg.trigger);
       if (rg_verbosity > 0) begin
@@ -251,8 +256,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    // The trigger is enqueued into the fifo above.
    // This rule deals with dequeueing it and handling the operations that need
    // to be done because of the trigger
-   rule rl_handle_trigger (rg_state != HALTED
-                           && rg_state != RESET);
+   rule rl_handle_trigger (rg_state == IDLE);
       let dir = fifo_trigger.first;
       fifo_trigger.deq;
 
@@ -276,15 +280,17 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                           && v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].tag
                           && v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_2)].tag
                           && v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_3)].tag;
-            let nxt_cap_val = { v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word
-                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word
+            let nxt_cap_val = { v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_3)].word
                               , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_2)].word
-                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_3)].word};
-            dma_int_reg.mm2s_curdesc_cap_write (unpack ({pack (nxt_tag), nxt_cap_val}));
-         end
-         if (rg_verbosity > 0) begin
-            $display ("MM2S trigger handling");
-            $display ("    addr: ", fshow(address));
+                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word
+                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word};
+            CapMem new_curdesc_cap = unpack ({pack (nxt_tag), nxt_cap_val});
+            dma_int_reg.mm2s_curdesc_cap_write (new_curdesc_cap);
+            if (rg_verbosity > 0) begin
+               $display ("    new mm2s_curdesc_cap: ", fshow (new_curdesc_cap));
+               CapPipe new_curdesc_cap_pipe = cast (new_curdesc_cap);
+               $display ("    new mm2s_curdesc_cap_pipe: ", fshow (new_curdesc_cap_pipe));
+            end
          end
          axi_sg.bd_read_from_mem(MM2S, address);
          rg_mm2s_first_fetch <= False;
@@ -307,15 +313,17 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                           && v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].tag
                           && v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_2)].tag
                           && v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_3)].tag;
-            let nxt_cap_val = { v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word
-                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word
+            let nxt_cap_val = { v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_3)].word
                               , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_2)].word
-                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_3)].word};
-            dma_int_reg.s2mm_curdesc_cap_write (unpack ({pack (nxt_tag), nxt_cap_val}));
-         end
-         if (rg_verbosity > 0) begin
-            $display ("S2MM trigger handling");
-            $display ("    addr: ", fshow(address));
+                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word
+                              , v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word};
+            CapMem new_curdesc_cap = unpack ({pack (nxt_tag), nxt_cap_val});
+            dma_int_reg.s2mm_curdesc_cap_write (new_curdesc_cap);
+            if (rg_verbosity > 0) begin
+               $display ("    new s2mm_curdesc_cap: ", fshow (new_curdesc_cap));
+               CapPipe new_curdesc_cap_pipe = cast (new_curdesc_cap);
+               $display ("    new s2mm_curdesc_cap_pipe: ", fshow (new_curdesc_cap_pipe));
+            end
          end
          axi_sg.bd_read_from_mem(S2MM, address);
          rg_s2mm_first_fetch <= False;
@@ -325,23 +333,22 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    // The Scatter Gather unit sets the trigger_callback signal high when it finishes
    // an MM2S SG fetch.
    // When the SG fetch is finished, we trigger the copying of the data
-   rule rl_handle_sg_trigger_callback (rg_state != HALTED
-                                       && rg_state != RESET
+   rule rl_handle_sg_trigger_callback (rg_state == IDLE
                                        && axi_sg.trigger_callback);
       dma_copy_unit.trigger;
    endrule
 
    // Trigger
-   rule rl_enq_copy_unit_end_trigger (rg_state != HALTED
-                                      && rg_state != RESET
+   rule rl_enq_copy_unit_end_trigger (rg_state == IDLE
                                       && isValid (dma_copy_unit.end_trigger));
       fifo_copy_unit_end_trigger.enq (fromMaybe (?, dma_copy_unit.end_trigger));
    endrule
 
    // Handle writing back the buffer descriptor after the end of a memory copy.
    // All the BD data should already have been updated
-   rule rl_handle_copy_unit_end_trigger (rg_state != HALTED
-                                         && rg_state != RESET);
+   (* conflict_free="rl_handle_copy_unit_end_trigger,dma_copy_unit_rl_s2mm_handle_bresp" *)
+   (* conflict_free="rl_handle_copy_unit_end_trigger,dma_copy_unit_rl_mm2s_update_state" *)
+   rule rl_handle_copy_unit_end_trigger (rg_state == IDLE);
       fifo_copy_unit_end_trigger.deq;
       let dir = fifo_copy_unit_end_trigger.first;
 
@@ -408,7 +415,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    // Runs the cycle after receiving a SG interrupt, which happens when
    // the SG unit finishes writing a BD back to main memory.
    // Gets the new BD from memory, to be ready for the next transaction
-   rule rl_handle_sg_fetch_after_write_s2mm (rg_state != HALTED
+   rule rl_handle_sg_fetch_after_write_s2mm (rg_state == IDLE
                                              && rg_fetch_after_intr);
       DMA_Dir dir_local = S2MM;
       rg_fetch_after_intr <= False;
@@ -419,6 +426,108 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
       dma_int_reg.s2mm_curdesc_write (unpack (truncate (address) & pack (s2mm_curdesc_rw_mask_halted)));
       dma_int_reg.s2mm_curdesc_msb_write (unpack (truncateLSB (address) & pack (s2mm_curdesc_rw_mask)));
       axi_sg.bd_read_from_mem (S2MM, address);
+   endrule
+
+   rule rl_handle_halt_req (isValid (axi_sg.enq_halt_o)
+                            || isValid (dma_copy_unit.enq_halt_o));
+      if (rg_verbosity > 0) begin
+         $display ("DMA Unit toplevel handling halt");
+      end
+      if (rg_verbosity > 1) begin
+         $display ("    axi_sg.enq_halt_o: ", fshow (axi_sg.enq_halt_o));
+         $display ("    dma_copy_unit.enq_halt_o: ", fshow (dma_copy_unit.enq_halt_o));
+      end
+      if (isValid (axi_sg.enq_halt_o)) begin
+         // write appropriate registers
+         if (axi_sg.current_dir == MM2S) begin
+            let mm2s_dmasr = dma_int_reg.mm2s_dmasr;
+            case (axi_sg.enq_halt_o.Valid)
+               INTERR:   mm2s_dmasr.sginterr = 1;
+               DECERR:   mm2s_dmasr.sgdecerr = 1;
+               SLVERR:   mm2s_dmasr.sgslverr = 1;
+               CHERIERR: mm2s_dmasr.sgcherierr = 1;
+            endcase
+            mm2s_dmasr.err_irq = 1;
+            dma_int_reg.mm2s_dmasr_write (mm2s_dmasr);
+            if (rg_verbosity > 1) begin
+               $display ("    wrote MM2S DMASR with ", fshow (mm2s_dmasr));
+            end
+         end else begin
+            let s2mm_dmasr = dma_int_reg.s2mm_dmasr;
+            case (axi_sg.enq_halt_o.Valid)
+               INTERR:   s2mm_dmasr.sginterr = 1;
+               DECERR:   s2mm_dmasr.sgdecerr = 1;
+               SLVERR:   s2mm_dmasr.sgslverr = 1;
+               CHERIERR: s2mm_dmasr.sgcherierr = 1;
+            endcase
+            s2mm_dmasr.err_irq = 1;
+            dma_int_reg.s2mm_dmasr_write (s2mm_dmasr);
+            if (rg_verbosity > 1) begin
+               $display ("    wrote S2MM DMASR with ", fshow (s2mm_dmasr));
+            end
+         end
+      end else begin
+         if (dma_copy_unit.current_dir == MM2S) begin
+            let mm2s_dmasr = dma_int_reg.mm2s_dmasr;
+            case (dma_copy_unit.enq_halt_o.Valid)
+               INTERR:   mm2s_dmasr.dmainterr = 1;
+               DECERR:   mm2s_dmasr.dmadecerr = 1;
+               SLVERR:   mm2s_dmasr.dmaslverr = 1;
+               CHERIERR: mm2s_dmasr.dmacherierr = 1;
+            endcase
+            mm2s_dmasr.err_irq = 1;
+            dma_int_reg.mm2s_dmasr_write (mm2s_dmasr);
+            if (rg_verbosity > 1) begin
+               $display ("    wrote MM2S DMASR with ", fshow (mm2s_dmasr));
+            end
+         end else begin
+            let s2mm_dmasr = dma_int_reg.s2mm_dmasr;
+            case (dma_copy_unit.enq_halt_o.Valid)
+               INTERR:   s2mm_dmasr.dmainterr = 1;
+               DECERR:   s2mm_dmasr.dmadecerr = 1;
+               SLVERR:   s2mm_dmasr.dmaslverr = 1;
+               CHERIERR: s2mm_dmasr.dmacherierr = 1;
+            endcase
+            s2mm_dmasr.err_irq = 1;
+            dma_int_reg.s2mm_dmasr_write (s2mm_dmasr);
+            if (rg_verbosity > 1) begin
+               $display ("    wrote S2MM DMASR with ", fshow (s2mm_dmasr));
+            end
+         end
+      end
+      // update the RS bit in DMACR
+      // NOTE: here we diverge from the original spec
+      //       In the original spec, it is possible for MM2S to be halted while
+      //       S2MM is not. In this design, this is not possible
+      let mm2s_dmacr = dma_int_reg.mm2s_dmacr;
+      let s2mm_dmacr = dma_int_reg.s2mm_dmacr;
+      mm2s_dmacr.rs = 0;
+      s2mm_dmacr.rs = 0;
+      dma_int_reg.mm2s_dmacr_write (mm2s_dmacr);
+      dma_int_reg.s2mm_dmacr_write (s2mm_dmacr);
+      if (rg_verbosity > 1) begin
+         $display ("    wrote MM2S DMACR with ", mm2s_dmacr);
+         $display ("    wrote S2MM DMACR with ", s2mm_dmacr);
+      end
+
+      rg_state <= HALTING_WAIT_RSP;
+      dma_reg.srv_halt.request.put (?);
+      dma_copy_unit.srv_halt.request.put (?);
+      axi_sg.srv_halt.request.put (?);
+   endrule
+
+   rule rl_handle_halt_rsp (rg_state == HALTING_WAIT_RSP);
+      let reg_rsp <- dma_reg.srv_halt.response.get;
+      let copy_rsp <- dma_copy_unit.srv_halt.response.get;
+      let sg_rsp <- axi_sg.srv_halt.response.get;
+      rg_state <= HALTED;
+
+      let mm2s_dmasr = dma_int_reg.mm2s_dmasr;
+      let s2mm_dmasr = dma_int_reg.s2mm_dmasr;
+      mm2s_dmasr.halted = 0;
+      s2mm_dmasr.halted = 0;
+      dma_int_reg.mm2s_dmasr_write (mm2s_dmasr);
+      dma_int_reg.s2mm_dmasr_write (s2mm_dmasr);
    endrule
 
    rule rl_debug_enq_copy_unit_end_trigger (isValid (dma_copy_unit.end_trigger)
