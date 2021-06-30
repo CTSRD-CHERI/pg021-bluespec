@@ -8,7 +8,6 @@ There are some features that are not implemented. A non-exhaustive list includes
 * Micro mode
 * Direct DMA mode
 * Interrupt Treshold/Delay
-* Error reporting in the registers
 * SOF/EOF bits (this module assumes each DMA Buffer Descriptor will have both SOF and EOF set)
 
 This version also has the restriction that it can only transfer data in one direction at a time, either Memory-Mapped to Stream or Stream to Memory-Mapped.
