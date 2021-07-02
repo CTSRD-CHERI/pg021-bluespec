@@ -55,6 +55,10 @@ register which holds the authorising capability for the current transaction.
 Currently this register is used _only_ for authorisation, and not for control.
 The address of this capability is not used.
 
+Currently, not all capability checks are performed as these have not yet been
+standardised for peripherals. In addition, as a debugging measure a
+capability with Execute permissions will bypass all checks, including validity.
+
 
 ### CHERIfied Register layout
 The names used here match up with the names used in the hardware source code,
