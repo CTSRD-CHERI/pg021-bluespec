@@ -198,7 +198,7 @@ module mkAXI4_DMA_Scatter_Gather
    function Tuple2 #(AXI4_ARFlit #(id_, addr_, aruser_), AXI4_Len) axi4_ar_burst_flit (Bit #(addr_) address, Bool cap_words, Bool app_words);
       Bit #(5) num_words_to_read = ?;
       if (cap_words && app_words) begin
-         if (valueOf (data_) >= 32) begin
+         if (valueOf (data_) >= 64) begin
             // if we have a bus that is at least 64 bits, then we can fetch the
             // entire buffer descriptor in one max-length (8-flit) burst
             num_words_to_read = fromInteger (valueOf (DMA_Num_Cap_Words)
