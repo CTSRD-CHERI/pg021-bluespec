@@ -357,8 +357,8 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
          // TODO handle 32bit addresses
          Bit #(addr_) cur_addr = truncate ({pack (dma_int_reg.s2mm_curdesc_msb),
                                             pack (dma_int_reg.s2mm_curdesc)});
-         Bit #(addr_) nxt_addr = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word,
-                                            v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word});
+         Bit #(addr_) nxt_addr = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word,
+                                            v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word});
          Bit #(addr_) address = rg_s2mm_first_fetch ? cur_addr
                                                     : nxt_addr;
          dma_int_reg.s2mm_curdesc_write (unpack (truncate (address)));
