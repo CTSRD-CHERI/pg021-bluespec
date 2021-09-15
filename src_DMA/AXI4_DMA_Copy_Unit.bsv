@@ -534,7 +534,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
       let bflit = ugshim_slave.b.peek;
       let cheri_err = bflit.bresp == SLVERR && truncateLSB(bflit.buser) == 1'b1;
 
-      if (bflit.bresp == SLVERR && bflit.bresp == DECERR) begin
+      if (bflit.bresp == SLVERR || bflit.bresp == DECERR) begin
          ugfifo_halt.enq (?);
          if (rg_verbosity > 0) begin
             $display ("DMA Copy Unit: got errored B response");
