@@ -310,6 +310,10 @@ module mkAXI4_DMA_Int_Reg (AXI4_DMA_Int_Reg_IFC);
                         | ( (pack (s2mm_taildesc_msb_rw_mask)) & newval);
             rg_s2mm_taildesc_msb <= unpack (raw_val);
          end
+         DMA_S2MM_CURDESC_CAP: begin
+            $display ("DMA Internal Register Module Error: should not try to write\n",
+                      "    capabilities using external_write");
+         end
       endcase
       if (rg_verbosity > 0) begin
          $display ("    written value: ", fshow (raw_val));
