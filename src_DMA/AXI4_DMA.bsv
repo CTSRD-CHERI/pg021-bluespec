@@ -20,10 +20,12 @@ import AXI4_DMA_Copy_Unit :: *;
 import AXI4_DMA_Types :: *;
 import AXI4_DMA_Internal_Reg_Module :: *;
 import AXI4_DMA_Utils :: *;
+`ifdef DMA_CHERI
 import AXI4_DMA_CHERI_Checker :: *;
 
 import CHERICap :: *;
 import CHERICC_Fat :: *;
+`endif
 
 import Fabric_Defs :: *;
 
@@ -186,6 +188,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                             aruser_, ruser_,
                             strm_id_, sdata_, sdest_, suser_) dma_copy_unit <- mkAXI4_DMA_Copy_Unit (v_v_rg_bd, dma_int_reg);
 
+`ifdef DMA_CHERI
    CHERI_Checker_IFC #(mid_, addr_, data_,
                        awuser_, wuser_, buser_,
                        aruser_, ruser_) sg_checker <- mkCHERI_Checker;
@@ -207,7 +210,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                            , v_v_rg_bd[pack (dma_copy_unit.current_dir)][pack (DMA_BUFFER_ADDRESS_1)].word
                            , v_v_rg_bd[pack (dma_copy_unit.current_dir)][pack (DMA_BUFFER_ADDRESS_0)].word};
    mkConnection (copy_checker.slave, fn_extend_ar_aw_user_fields (dma_copy_unit.axi4_master, {copy_unit_cap_tag ? 1'b1 : 1'b0, copy_unit_cap_val}));
-
+`endif
 
    // FIFO containing triggers from the Register Module
    FIFOF #(DMA_Dir) fifo_trigger <- mkFIFOF1;
@@ -323,12 +326,18 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
          // TODO handle 32bit addresses
          Bit #(addr_) cur_addr = truncate ({pack (dma_int_reg.mm2s_curdesc_msb),
                                             pack (dma_int_reg.mm2s_curdesc)});
+`ifdef DMA_CHERI
          Bit #(addr_) nxt_addr = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word,
                                             v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word});
+`else
+         Bit #(addr_) nxt_addr = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_MSB)].word,
+                                            v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC)].word});
+`endif
          Bit #(addr_) address = rg_mm2s_first_fetch ? cur_addr
                                                     : nxt_addr;
          dma_int_reg.mm2s_curdesc_write (unpack (truncate (address)));
          dma_int_reg.mm2s_curdesc_msb_write (unpack (truncateLSB (address)));
+`ifdef DMA_CHERI
          if (!rg_mm2s_first_fetch) begin
             // TODO this assumes 128-bit capabilities
             let nxt_tag = v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].tag
@@ -347,6 +356,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                $display ("    new mm2s_curdesc_cap_pipe: ", fshow (new_curdesc_cap_pipe));
             end
          end
+`endif
          axi_sg.bd_read_from_mem(MM2S, address);
          rg_mm2s_first_fetch <= False;
       end else begin
@@ -357,12 +367,18 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
          // TODO handle 32bit addresses
          Bit #(addr_) cur_addr = truncate ({pack (dma_int_reg.s2mm_curdesc_msb),
                                             pack (dma_int_reg.s2mm_curdesc)});
+`ifdef DMA_CHERI
          Bit #(addr_) nxt_addr = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word,
                                             v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word});
+`else
+         Bit #(addr_) nxt_addr = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_MSB)].word,
+                                            v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC)].word});
+`endif
          Bit #(addr_) address = rg_s2mm_first_fetch ? cur_addr
                                                     : nxt_addr;
          dma_int_reg.s2mm_curdesc_write (unpack (truncate (address)));
          dma_int_reg.s2mm_curdesc_msb_write (unpack (truncateLSB (address)));
+`ifdef DMA_CHERI
          if (!rg_s2mm_first_fetch) begin
             let nxt_tag = v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].tag
                           && v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].tag
@@ -380,6 +396,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                $display ("    new s2mm_curdesc_cap_pipe: ", fshow (new_curdesc_cap_pipe));
             end
          end
+`endif
          axi_sg.bd_read_from_mem(S2MM, address);
          rg_s2mm_first_fetch <= False;
       end
@@ -476,8 +493,13 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
       rg_fetch_after_intr <= False;
       // bsc is not able to disambiguate the type if we use pack (S2MM) so we introduce
       // dir_local instead
+`ifdef DMA_CHERI
       Bit #(addr_) address = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_1)].word
                                        ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_0)].word});
+`else
+      Bit #(addr_) address = truncate ({v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC_MSB)].word
+                                       ,v_v_rg_bd[pack (dir_local)][pack (DMA_NXTDESC)].word});
+`endif
       dma_int_reg.s2mm_curdesc_write (unpack (truncate (address) & pack (s2mm_curdesc_rw_mask_halted)));
       dma_int_reg.s2mm_curdesc_msb_write (unpack (truncateLSB (address) & pack (s2mm_curdesc_rw_mask)));
       axi_sg.bd_read_from_mem (S2MM, address);
@@ -500,7 +522,9 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                INTERR:   mm2s_dmasr.sginterr = 1;
                DECERR:   mm2s_dmasr.sgdecerr = 1;
                SLVERR:   mm2s_dmasr.sgslverr = 1;
+`ifdef DMA_CHERI
                CHERIERR: mm2s_dmasr.sgcherierr = 1;
+`endif
             endcase
             mm2s_dmasr.err_irq = 1;
             dma_int_reg.mm2s_dmasr_write (mm2s_dmasr);
@@ -513,7 +537,9 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                INTERR:   s2mm_dmasr.sginterr = 1;
                DECERR:   s2mm_dmasr.sgdecerr = 1;
                SLVERR:   s2mm_dmasr.sgslverr = 1;
+`ifdef DMA_CHERI
                CHERIERR: s2mm_dmasr.sgcherierr = 1;
+`endif
             endcase
             s2mm_dmasr.err_irq = 1;
             dma_int_reg.s2mm_dmasr_write (s2mm_dmasr);
@@ -528,7 +554,9 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                INTERR:   mm2s_dmasr.dmainterr = 1;
                DECERR:   mm2s_dmasr.dmadecerr = 1;
                SLVERR:   mm2s_dmasr.dmaslverr = 1;
+`ifdef DMA_CHERI
                CHERIERR: mm2s_dmasr.dmacherierr = 1;
+`endif
             endcase
             mm2s_dmasr.err_irq = 1;
             dma_int_reg.mm2s_dmasr_write (mm2s_dmasr);
@@ -541,7 +569,9 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                INTERR:   s2mm_dmasr.dmainterr = 1;
                DECERR:   s2mm_dmasr.dmadecerr = 1;
                SLVERR:   s2mm_dmasr.dmaslverr = 1;
+`ifdef DMA_CHERI
                CHERIERR: s2mm_dmasr.dmacherierr = 1;
+`endif
             endcase
             s2mm_dmasr.err_irq = 1;
             dma_int_reg.s2mm_dmasr_write (s2mm_dmasr);
@@ -627,8 +657,13 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                                | ( dma_int_reg.mm2s_dmasr.ioc_irq & dma_int_reg.mm2s_dmacr.ioc_irqen )
                                ) == 1'b1;
 
+`ifdef DMA_CHERI
    interface axi_sg_master = fn_truncate_ar_aw_user_fields (sg_checker.master);
    interface axi_copy_master = fn_truncate_ar_aw_user_fields (copy_checker.master);
+`else
+   interface axi_sg_master = axi_sg.axi4_master;
+   interface axi_copy_master = dma_copy_unit.axi4_master;
+`endif
 
    interface axi_reg_slave = dma_reg.axi4_slave;
 
@@ -639,8 +674,10 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
       dma_copy_unit.set_verbosity      (new_verb);
       dma_int_reg.set_verbosity        (new_verb);
       axi4s_loopback.set_verbosity     (new_verb);
+`ifdef DMA_CHERI
       sg_checker.set_verbosity         (new_verb);
       copy_checker.set_verbosity       (new_verb);
+`endif
    endmethod
 
    method Action reset;

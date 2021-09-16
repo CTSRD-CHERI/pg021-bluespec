@@ -259,7 +259,11 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
 endmodule
 
 function DMA_BD_TagWord fn_to_untagged_tagword (DMA_BD_Word word)
-   = DMA_BD_TagWord { word: word, tag: False };
+   = DMA_BD_TagWord { word: word
+`ifdef DMA_CHERI
+                    , tag: False
+`endif
+                    };
 
 function AXI4_Master #(id_, addr_, data_,
                        awuser_o_, wuser_, buser_,

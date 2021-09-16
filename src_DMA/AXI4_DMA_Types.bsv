@@ -25,20 +25,49 @@ typedef struct {
 typedef TDiv #(SizeOf #(DMA_BD), SizeOf #(DMA_BD_Word)) DMA_Num_Words;
 // TODO find a better way of doing this?
 // number of words holding capabilities in 32-bit and 64-bit modes
+typedef 4 DMA_Num_NonCap_Ptr_Words;
 typedef 4 DMA_Num_Cap_Words_32;
 typedef 8 DMA_Num_Cap_Words_64;
 
+`ifdef DMA_CHERI
 `ifdef RV64
-typedef DMA_Num_Cap_Words_64 DMA_Num_Cap_Words;
+typedef DMA_Num_Cap_Words_64 DMA_Num_Ptr_Words;
 `else
-typedef DMA_Num_Cap_Words_32 DMA_Num_Cap_Words;
+typedef DMA_Num_Cap_Words_32 DMA_Num_Ptr_Words;
+`endif
+`else // no DMA_CHERI
+typedef DMA_Num_NonCap_Ptr_Words DMA_Num_Ptr_Words;
 `endif
 
+`ifdef DMA_CHERI
+`ifdef RV64
+typedef 0 DMA_Num_Res_Mid_Words;
+`else
+typedef 4 DMA_Num_Res_Mid_Words;
+`endif
+`else // no DMA_CHERI
+typedef 2 DMA_Num_Res_Mid_Words;
+`endif
 typedef 2 DMA_Num_Control_Words;
 typedef 5 DMA_Num_App_Words;
-typedef 1 DMA_Num_Res_Words;
-typedef TAdd #(TAdd #(DMA_Num_Control_Words, DMA_Num_App_Words), DMA_Num_Res_Words)
-   DMA_Num_Control_App_Words;
+typedef 1 DMA_Num_Res_End_Words;
+typedef TAdd #(DMA_Num_Control_Words,
+               DMA_Num_App_Words) DMA_Num_Control_App_Words;
+
+typedef TAdd #(DMA_Num_Control_App_Words,
+               DMA_Num_Res_End_Words) DMA_Num_Control_App_Res_Words;
+
+typedef TAdd #(DMA_Num_Ptr_Words,
+        TAdd #(DMA_Num_Res_Mid_Words,
+        TAdd #(DMA_Num_Control_Words,
+        TAdd #(DMA_Num_App_Words,
+               DMA_Num_Res_End_Words)))) DMA_Num_Total_Words;
+
+`ifdef DMA_CHERI
+typedef 1 Checker_Resp_U_Bits;
+`else
+typedef 0 Checker_Resp_U_Bits;
+`endif
 
 typedef enum {
    MM2S,
@@ -46,10 +75,12 @@ typedef enum {
 } DMA_Dir deriving (Bits, Eq, FShow);
 
 typedef enum {
-   INTERR,
-   DECERR,
-   SLVERR,
-   CHERIERR
+     INTERR
+   , DECERR
+   , SLVERR
+`ifdef DMA_CHERI
+   , CHERIERR
+`endif
 } DMA_Err_Cause deriving (Bits, Eq, FShow);
 
 typedef enum {
@@ -69,6 +100,7 @@ typedef struct {
 // bursts with larger sizes (rather than 32-bit bursts) while still reading
 // only words dedicated for the DMA engine.
 
+`ifdef DMA_CHERI
 `ifdef RV64
 // 64-bit setup
 typedef enum {
@@ -112,6 +144,23 @@ typedef enum {
    DMA_RESERVED_4
 } DMA_BD_Index deriving (Bits, Eq, FShow, Bounded);
 `endif
+`else // no DMA_CHERI
+typedef enum {
+   DMA_NXTDESC,
+   DMA_NXTDESC_MSB,
+   DMA_BUFFER_ADDRESS,
+   DMA_BUFFER_ADDRESS_MSB,
+   DMA_RESERVED0,
+   DMA_RESERVED1,
+   DMA_CONTROL,
+   DMA_STATUS,
+   DMA_APP0,
+   DMA_APP1,
+   DMA_APP2,
+   DMA_APP3,
+   DMA_APP4
+} DMA_BD_Index deriving (Bits, Eq, FShow, Bounded);
+`endif
 
 
 // This is defined in the Xilinx specification
@@ -119,26 +168,32 @@ typedef Bit #(32) DMA_BD_Word;
 
 // tagged word to keep track of CHERI validity tags
 typedef struct {
+`ifdef DMA_CHERI
    Bool tag;
+`endif
    DMA_BD_Word word;
 } DMA_BD_TagWord deriving (Bits, Eq, FShow);
 
 //Reg_ refers to the Register Module
 typedef enum {
-   DMA_MM2S_DMACR          = 'h00,      // offset 0x00
-   DMA_MM2S_DMASR          = 'h01,      // offset 0x04
-   DMA_MM2S_CURDESC        = 'h02,      // offset 0x08
-   DMA_MM2S_CURDESC_MSB    = 'h03,      // offset 0x0c
-   DMA_MM2S_TAILDESC       = 'h04,      // offset 0x10
-   DMA_MM2S_TAILDESC_MSB   = 'h05,      // offset 0x14
-   DMA_MM2S_CURDESC_CAP    = 'h08,      // offset 0x20, length 0x10
-   DMA_S2MM_DMACR          = 'h0c,      // offset 0x30
-   DMA_S2MM_DMASR          = 'h0d,      // offset 0x34
-   DMA_S2MM_CURDESC        = 'h0e,      // offset 0x38
-   DMA_S2MM_CURDESC_MSB    = 'h0f,      // offset 0x3c
-   DMA_S2MM_TAILDESC       = 'h10,      // offset 0x40
-   DMA_S2MM_TAILDESC_MSB   = 'h11,      // offset 0x44
-   DMA_S2MM_CURDESC_CAP    = 'h14       // offset 0x50, length 0x10
+     DMA_MM2S_DMACR          = 'h00       // offset 0x00
+   , DMA_MM2S_DMASR          = 'h01       // offset 0x04
+   , DMA_MM2S_CURDESC        = 'h02       // offset 0x08
+   , DMA_MM2S_CURDESC_MSB    = 'h03       // offset 0x0c
+   , DMA_MM2S_TAILDESC       = 'h04       // offset 0x10
+   , DMA_MM2S_TAILDESC_MSB   = 'h05       // offset 0x14
+`ifdef DMA_CHERI
+   , DMA_MM2S_CURDESC_CAP    = 'h08       // offset 0x20, length 0x10
+`endif
+   , DMA_S2MM_DMACR          = 'h0c       // offset 0x30
+   , DMA_S2MM_DMASR          = 'h0d       // offset 0x34
+   , DMA_S2MM_CURDESC        = 'h0e       // offset 0x38
+   , DMA_S2MM_CURDESC_MSB    = 'h0f       // offset 0x3c
+   , DMA_S2MM_TAILDESC       = 'h10       // offset 0x40
+   , DMA_S2MM_TAILDESC_MSB   = 'h11       // offset 0x44
+`ifdef DMA_CHERI
+   , DMA_S2MM_CURDESC_CAP    = 'h14       // offset 0x50, length 0x10
+`endif
 } DMA_Reg_Index deriving (Eq, Bits, FShow, Bounded);
 
 typedef Bit #(32) DMA_Reg_Word;
@@ -199,11 +254,19 @@ typedef struct {
    Bit #(1) err_irq;
    Bit #(1) dly_irq;
    Bit #(1) ioc_irq;
+`ifdef DMA_CHERI
    Bit #(1) sgcherierr;
+`else
+   Bit #(1) reserved2;
+`endif
    Bit #(1) sgdecerr;
    Bit #(1) sgslverr;
    Bit #(1) sginterr;
+`ifdef DMA_CHERI
    Bit #(1) dmacherierr;
+`else
+   Bit #(1) reserved3;
+`endif
    Bit #(1) dmadecerr;
    Bit #(1) dmaslverr;
    Bit #(1) dmainterr;
@@ -220,11 +283,19 @@ MM2S_DMASR mm2s_dmasr_default = MM2S_DMASR {
    err_irq          : 0,
    dly_irq          : 0,
    ioc_irq          : 0,
+`ifdef DMA_CHERI
    sgcherierr       : 0,
+`else
+   reserved2        : 0,
+`endif
    sgdecerr         : 0,
    sgslverr         : 0,
    sginterr         : 0,
+`ifdef DMA_CHERI
    dmacherierr      : 0,
+`else
+   reserved3        : 0,
+`endif
    dmadecerr        : 0,
    dmaslverr        : 0,
    dmainterr        : 0,
@@ -241,11 +312,19 @@ MM2S_DMASR mm2s_dmasr_rw_mask = MM2S_DMASR {
    err_irq         : `ONES,
    dly_irq         : `ONES,
    ioc_irq         : `ONES,
+`ifdef DMA_CHERI
    sgcherierr      : `ZEROES,
+`else
+   reserved2       : `ZEROES,
+`endif
    sgdecerr        : `ZEROES,
    sgslverr        : `ZEROES,
    sginterr        : `ZEROES,
+`ifdef DMA_CHERI
    dmacherierr     : `ZEROES,
+`else
+   reserved3       : `ZEROES,
+`endif
    dmadecerr       : `ZEROES,
    dmaslverr       : `ZEROES,
    dmainterr       : `ZEROES,
@@ -371,11 +450,19 @@ typedef struct {
    Bit #(1) err_irq;
    Bit #(1) dly_irq;
    Bit #(1) ioc_irq;
+`ifdef DMA_CHERI
    Bit #(1) sgcherierr;
+`else
+   Bit #(1) reserved2;
+`endif
    Bit #(1) sgdecerr;
    Bit #(1) sgslverr;
    Bit #(1) sginterr;
+`ifdef DMA_CHERI
    Bit #(1) dmacherierr;
+`else
+   Bit #(1) reserved3;
+`endif
    Bit #(1) dmadecerr;
    Bit #(1) dmaslverr;
    Bit #(1) dmainterr;
@@ -392,11 +479,19 @@ S2MM_DMASR s2mm_dmasr_default = S2MM_DMASR {
    err_irq         : 0,
    dly_irq         : 0,
    ioc_irq         : 0,
+`ifdef DMA_CHERI
    sgcherierr      : 0,
+`else
+   reserved2       : 0,
+`endif
    sgdecerr        : 0,
    sgslverr        : 0,
    sginterr        : 0,
+`ifdef DMA_CHERI
    dmacherierr     : 0,
+`else
+   reserved3       : 0,
+`endif
    dmadecerr       : 0,
    dmaslverr       : 0,
    dmainterr       : 0,
@@ -413,11 +508,19 @@ S2MM_DMASR s2mm_dmasr_rw_mask = S2MM_DMASR {
    err_irq           : `ONES,
    dly_irq           : `ONES,
    ioc_irq           : `ONES,
+`ifdef DMA_CHERI
    sgcherierr        : `ZEROES,
+`else
+   reserved2         : `ZEROES,
+`endif
    sgdecerr          : `ZEROES,
    sgslverr          : `ZEROES,
    sginterr          : `ZEROES,
+`ifdef DMA_CHERI
    dmacherierr       : `ZEROES,
+`else
+   reserved3         : `ZEROES,
+`endif
    dmadecerr         : `ZEROES,
    dmaslverr         : `ZEROES,
    dmainterr         : `ZEROES,

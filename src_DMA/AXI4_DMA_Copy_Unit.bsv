@@ -34,8 +34,8 @@ interface AXI4_DMA_Copy_Unit_IFC #(numeric type id_
                                   ,numeric type suser_);
 
    interface AXI4_Master #(id_, addr_, data_,
-                           awuser_, wuser_, TAdd #(1, buser_),
-                           aruser_, TAdd #(1, ruser_)) axi4_master;
+                           awuser_, wuser_, TAdd #(Checker_Resp_U_Bits, buser_),
+                           aruser_, TAdd #(Checker_Resp_U_Bits, ruser_)) axi4_master;
 
    interface AXI4Stream_Master #(sid_, sdata_, sdest_, suser_) axi4s_data_master;
    interface AXI4Stream_Master #(sid_, sdata_, sdest_, suser_) axi4s_meta_master;
@@ -366,7 +366,12 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
       if (rg_verbosity > 0) begin
          $display ("AXI4 DMA Copy Unit starting S2MM transfer");
       end
-      rg_addr_next_byte <= zeroExtend (pack (v_v_rg_bd[pack (S2MM)][pack (DMA_BUFFER_ADDRESS_0)].word));
+      rg_addr_next_byte
+`ifdef DMA_CHERI
+                        <= zeroExtend (pack (v_v_rg_bd[pack (S2MM)][pack (DMA_BUFFER_ADDRESS_0)].word));
+`else
+                        <= zeroExtend (pack (v_v_rg_bd[pack (S2MM)][pack (DMA_BUFFER_ADDRESS)].word));
+`endif
       rg_buf_len <= 0;
       rg_buf_cur <= 0;
       crg_dir[0] <= S2MM;
@@ -532,7 +537,9 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
       ugshim_slave.b.drop;
 
       let bflit = ugshim_slave.b.peek;
+`ifdef DMA_CHERI
       let cheri_err = bflit.bresp == SLVERR && truncateLSB(bflit.buser) == 1'b1;
+`endif
 
       if (bflit.bresp == SLVERR || bflit.bresp == DECERR) begin
          ugfifo_halt.enq (?);
@@ -541,12 +548,15 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
             if (rg_verbosity > 1) begin
                $display ("    flit: ", fshow (bflit));
             end
+`ifdef DMA_CHERI
             if (cheri_err) begin
                if (rg_verbosity > 0) begin
                   $display ("    Errored due to CHERI capability not authorising access");
                end
                rw_enq_halt_o.wset (CHERIERR);
-            end else if (bflit.bresp == SLVERR) begin
+            end else
+`endif
+            if (bflit.bresp == SLVERR) begin
                if (rg_verbosity > 0) begin
                   $display ("    Errored due to SLVERR");
                end
@@ -770,7 +780,9 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
                            );
       ugshim_slave.r.drop;
       let rflit = ugshim_slave.r.peek;
+`ifdef DMA_CHERI
       let cheri_err = rflit.rresp == SLVERR && truncateLSB (rflit.ruser) == 1'b1;
+`endif
 
       if (rflit.rresp == SLVERR || rflit.rresp == DECERR) begin
          ugfifo_halt.enq (?);
@@ -779,12 +791,15 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
             if (rg_verbosity > 1) begin
                $display ("    flit: ", fshow (rflit));
             end
+`ifdef DMA_CHERI
             if (cheri_err) begin
                if (rg_verbosity > 0) begin
                   $display ("    Errored due to CHERI capability not authorising access");
                end
                rw_enq_halt_o.wset (CHERIERR);
-            end else if (rflit.rresp == SLVERR) begin
+            end else
+`endif
+            if (rflit.rresp == SLVERR) begin
                if (rg_verbosity > 0) begin
                   $display ("    Errored due to SLVERR");
                end
@@ -850,7 +865,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
             if (axi4s_m_meta_ugshim_master.canPeek) begin
                axi4s_m_meta_ugshim_master.drop;
                if (rg_verbosity > 1) begin
-                  $display ("CHERI DMA Unit dropped s2mm meta flit: ", fshow (axi4s_m_meta_ugshim_master.peek));
+                  $display ("DMA Copy Unit dropped s2mm meta flit: ", fshow (axi4s_m_meta_ugshim_master.peek));
                end
                if (axi4s_m_meta_ugshim_master.peek.tlast) begin
                   rg_state <= COPYING;
@@ -1130,7 +1145,12 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
          $display ("DMA Copy Unit received MM2S trigger");
       end
       crg_dir[0] <= MM2S;
-      rg_addr_next_byte <= zeroExtend (pack (v_v_rg_bd[pack (MM2S)][pack (DMA_BUFFER_ADDRESS_0)].word));
+      rg_addr_next_byte
+`ifdef DMA_CHERI
+                        <= zeroExtend (pack (v_v_rg_bd[pack (MM2S)][pack (DMA_BUFFER_ADDRESS_0)].word));
+`else
+                        <= zeroExtend (pack (v_v_rg_bd[pack (MM2S)][pack (DMA_BUFFER_ADDRESS)].word));
+`endif
       rg_buf_cur <= 0;
       rg_buf_len <= zeroExtend ((pack (v_v_rg_bd[pack (MM2S)][pack (DMA_CONTROL)].word))[25:0]);
       rg_stream_out_count <= 0;

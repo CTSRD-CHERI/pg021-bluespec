@@ -15,8 +15,10 @@ import Connectable :: *;
 // local imports
 import AXI4_DMA_Types :: *;
 
+`ifdef DMA_CHERI
 import CHERICap :: *;
 import CHERICC_Fat :: *;
+`endif
 
 interface AXI4_DMA_Scatter_Gather_IFC#(numeric type id_,
                                        numeric type addr_,
@@ -59,8 +61,8 @@ interface AXI4_DMA_Scatter_Gather_IFC#(numeric type id_,
 
    // The master used for reading and writing Buffer Descriptors
    interface AXI4_Master #(id_, addr_, data_,
-                           awuser_, wuser_, TAdd #(1, buser_),
-                           aruser_, TAdd #(1, ruser_)) axi4_master;
+                           awuser_, wuser_, TAdd #(Checker_Resp_U_Bits, buser_),
+                           aruser_, TAdd #(Checker_Resp_U_Bits, ruser_)) axi4_master;
 
    method Action set_verbosity (Bit #(4) new_verb);
 
@@ -181,39 +183,42 @@ module mkAXI4_DMA_Scatter_Gather
    // and the other contains the application words.
    // app_words controls whether we read application words or DMA control words.
    // Cases:
-   //    cap_words == True, app_words == True
+   //    ptr_words == True, app_words == True
    //       For 64-bit, fetch the entire buffer descriptor in 1 burst, because
    //       we have enough bandwidth for it
-   //       For 32-bit, fetch only the capability words (ie treat as though
+   //       For 32-bit, fetch only the pointer words (ie treat as though
    //       app_words is false
-   //    cap_words == True, app_words == False
-   //       Fetch only the capability words
+   //    ptr_words == True, app_words == False
+   //       Fetch only the pointer words
    //       For 32-bit, this will fetch 16 bytes
    //       For 64-bit, this will fetch 32 bytes
-   //    cap_words == False, app_words == True
+   //    ptr_words == False, app_words == True
    //       Fetch both the application words (DMA_APP0 .. DMA_APP4) _and_ the
    //       control words (DMA_BD_CONTROL and DMA_BD_STATUS)
-   //    cap_words == False, app_words == False
+   //    ptr_words == False, app_words == False
    //       Fetch only the control words (DMA_BD_CONTROL and DMA_BD_STATUS)
-   function Tuple2 #(AXI4_ARFlit #(id_, addr_, aruser_), AXI4_Len) axi4_ar_burst_flit (Bit #(addr_) address, Bool cap_words, Bool app_words);
+   function Tuple2 #(AXI4_ARFlit #(id_, addr_, aruser_), AXI4_Len) axi4_ar_burst_flit (Bit #(addr_) address, Bool ptr_words, Bool app_words);
       Bit #(5) num_words_to_read = ?;
-      if (cap_words && app_words) begin
+      if (ptr_words && app_words) begin
          if (valueOf (data_) >= 64) begin
             // if we have a bus that is at least 64 bits, then we can fetch the
             // entire buffer descriptor in one max-length (8-flit) burst
-            num_words_to_read = fromInteger (valueOf (DMA_Num_Cap_Words)
-                                             + valueOf (DMA_Num_Control_App_Words));
+            num_words_to_read = fromInteger (valueOf (DMA_Num_Total_Words));
          end else begin
             // if our bus is not at least 64 bits, then we have to issue
-            // multiple bursts. The first one will read only the capability
+            // multiple bursts. The first one will read only the pointer
             // words
-            num_words_to_read = fromInteger (valueOf (DMA_Num_Cap_Words));
+            num_words_to_read = fromInteger (valueOf (DMA_Num_Ptr_Words));
          end
-      end else if (cap_words && !app_words) begin
-         num_words_to_read = fromInteger (valueOf (DMA_Num_Cap_Words));
-      end else if (!cap_words && app_words) begin
+      end else if (ptr_words && !app_words) begin
+         num_words_to_read = fromInteger (valueOf (DMA_Num_Ptr_Words));
+      end else if (!ptr_words && app_words) begin
+`ifdef DMA_CHERI
+         num_words_to_read = fromInteger (valueOf (DMA_Num_Control_App_Res_Words));
+`else
          num_words_to_read = fromInteger (valueOf (DMA_Num_Control_App_Words));
-      end else if (!cap_words && !app_words) begin
+`endif
+      end else if (!ptr_words && !app_words) begin
          num_words_to_read = fromInteger (valueOf (DMA_Num_Control_Words));
       end
 
@@ -336,18 +341,25 @@ module mkAXI4_DMA_Scatter_Gather
                Bit #(TLog #(data_)) offset = base_offset + fromInteger (i) * 32;
                DMA_BD_Word word_to_write = unpack (rflit.rdata[offset+31:offset]);
                // TODO multiple user bits?
+`ifdef DMA_CHERI
                Bit #(ruser_) expected_ruser = signExtend (1'b1);
                Bool tag_to_write = truncate (rflit.ruser) == expected_ruser;
+`endif
 
                DMA_BD_TagWord val_to_write = DMA_BD_TagWord { word: word_to_write
-                                                            , tag: tag_to_write};
+`ifdef DMA_CHERI
+                                                            , tag: tag_to_write
+`endif
+                                                            };
                DMA_BD_Index reg_to_write = unpack (pack (rg_bd_index) + fromInteger (i));
                v_v_rg_bd[cur_dir][pack (reg_to_write)] <= val_to_write;
                if (rg_verbosity > 0) begin
                   $display ("AXI DMA SG Register Write");
                   $display ("    register: ", fshow (reg_to_write));
                   $display ("    value: ", fshow (val_to_write));
+`ifdef DMA_CHERI
                   $display ("    expected_ruser: ", fshow (expected_ruser));
+`endif
                end
             end
          end
@@ -369,10 +381,15 @@ module mkAXI4_DMA_Scatter_Gather
          // TODO handle DMA scatter-gather read errors
          $display ("AXI4 SG Unit: ERROR IN DMA: ", fshow(rflit.rresp));
          $display ("    flit: ", fshow (rflit));
+`ifdef DMA_CHERI
          let cherierr = truncateLSB (rflit.ruser) == 1'b1;
          rw_enq_halt_o.wset ( cherierr              ? CHERIERR
                             : rflit.rresp == DECERR ? DECERR
                                                     : SLVERR);
+`else
+         rw_enq_halt_o.wset ( rflit.rresp == DECERR ? DECERR
+                                                    : SLVERR);
+`endif
       end
 
       if (rflit.rlast) begin
@@ -419,8 +436,12 @@ module mkAXI4_DMA_Scatter_Gather
 
             // Maximum expected values for latest_bd_index
             // Explicitly set here to avoid type ambiguity
+`ifdef DMA_CHERI
             DMA_BD_Index app_max = rg_req_size > toAXI4_Size (4).Valid ? DMA_RESERVED_4
                                                                        : DMA_APP4;
+`else
+            DMA_BD_Index app_max = DMA_APP4;
+`endif
             DMA_BD_Index ctrl_max = DMA_STATUS;
             // check that we wrote the last index when rlast is true
             // This checks that our requests were the right size
@@ -602,17 +623,25 @@ module mkAXI4_DMA_Scatter_Gather
             SLVERR: begin
                $display ("AXI4 SG Unit: ERROR: something went wrong in the DMA write response");
                $display ("   got a slave error");
+`ifdef DMA_CHERI
                let cherierr = truncateLSB (bflit.buser) == 1'b1;
                rw_enq_halt_o.wset (cherierr ? CHERIERR
                                             : SLVERR);
+`else
+               rw_enq_halt_o.wset (SLVERR);
+`endif
             end
 
             DECERR: begin
                $display ("AXI4 SG Unit: ERROR: something went wrong in the DMA write response");
                $display ("   got a decoding error");
+`ifdef DMA_CHERI
                let cherierr = truncateLSB (bflit.buser) == 1'b1;
                rw_enq_halt_o.wset (cherierr ? CHERIERR
                                             : DECERR);
+`else
+               rw_enq_halt_o.wset (DECERR);
+`endif
             end
 
             default: begin
@@ -640,7 +669,7 @@ module mkAXI4_DMA_Scatter_Gather
 
    rule rl_handle_halt (ugfifo_halt.notEmpty);
       if (rg_verbosity > 0) begin
-         $display ("CHERI SG Unit rl_handle_halt");
+         $display ("DMA SG Unit rl_handle_halt");
       end
       case (rg_state)
          DMA_RESET, DMA_IDLE, DMA_HALTED, DMA_MAIN_WRITE_START, DMA_APP_WRITE_START: begin
@@ -799,7 +828,11 @@ module mkAXI4_DMA_Scatter_Gather
          $display ("AXI4 SG Unit: requested fetch of next buffer descriptor");
       end
 
+`ifdef DMA_CHERI
       DMA_BD_Index nxtdesc_0_idx = DMA_NXTDESC_0;
+`else
+      DMA_BD_Index nxtdesc_0_idx = DMA_NXTDESC;
+`endif
       Bit #(addr_) addr = zeroExtend (v_v_rg_bd[pack (dir)][pack (nxtdesc_0_idx)].word);
 
       // bus transaction
