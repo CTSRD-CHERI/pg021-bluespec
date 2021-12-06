@@ -1,5 +1,7 @@
 package AXI4_DMA_CHERI_Checker;
 
+import DReg :: *;
+
 import AXI :: *;
 import CHERICap :: *;
 import CHERICC_Fat :: *;
@@ -66,15 +68,20 @@ module mkCHERI_Checker (CHERI_Checker_IFC #(id_, addr_, data_, awuser_o_, wuser_
 
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
 
+   // connected to the outside
    let inShim <- mkAXI4ShimFF;
-   let inSerial <- mkSerialiser (inShim.master);
    let outShim <- mkAXI4ShimFF;
+   // serialised input
+   let inSerial <- mkSerialiser (inShim.master);
+
 
    Reg #(State) rg_state <- mkReg (IDLE);
 
    Reg #(Bit #(TAdd #(SizeOf #(AXI4_Len), 1))) rg_count <- mkRegU;
 
    Reg #(Mem_Op) rg_mem_op <- mkRegU;
+
+   Wire #(Bool) dw_req_allowed <- mkDReg (False);
 
    // TODO this doesn't support WRAP bursts at all
    function Bool fn_allow_flit ( Bit #(addr_) addr
@@ -108,19 +115,29 @@ module mkCHERI_Checker (CHERI_Checker_IFC #(id_, addr_, data_, awuser_o_, wuser_
       return is_allowed;
    endfunction
 
+   // reduce instantiations of fn_allow_flit by using it only in one place
+   rule rl_handle_cur_req;
+      let use_aw = inSerial.aw.canPeek;
+      let use_ar = inSerial.ar.canPeek;
+      let awflit = inSerial.aw.peek;
+      let arflit = inSerial.ar.peek;
+      let txion_allowed = fn_allow_flit ( use_aw ? awflit.awaddr  : use_ar ? arflit.araddr  : ?
+                                        , use_aw ? awflit.awlen   : use_ar ? arflit.arlen   : ?
+                                        , use_aw ? awflit.awsize  : use_ar ? arflit.arsize  : ?
+                                        , use_aw ? awflit.awburst : use_ar ? arflit.arburst : ?
+                                        , use_aw ? unpack (truncateLSB (awflit.awuser)) :
+                                          use_ar ? unpack (truncateLSB (arflit.aruser)) :
+                                          ?);
+      dw_req_allowed <= txion_allowed;
+   endrule
+
    rule rl_handle_new_aw (rg_state == IDLE
                           && inSerial.aw.canPeek
                           && outShim.slave.aw.canPut);
       let awflit = inSerial.aw.peek;
       rg_count <= 0;
       rg_mem_op <= AW;
-      // TODO see if multiple uses of fn_allow_flit will lead to redundant
-      //      logic instantiation
-      let txion_allowed = fn_allow_flit ( awflit.awaddr
-                                        , awflit.awlen
-                                        , awflit.awsize
-                                        , awflit.awburst
-                                        , unpack (truncateLSB (awflit.awuser)));
+      let txion_allowed = dw_req_allowed;
 
       rg_state <= txion_allowed ? FORWARD_W
                                 : DENY_W;
@@ -163,13 +180,7 @@ module mkCHERI_Checker (CHERI_Checker_IFC #(id_, addr_, data_, awuser_o_, wuser_
       let arflit = inSerial.ar.peek;
       rg_count <= 0;
       rg_mem_op <= AR;
-      // TODO see if multiple uses of fn_allow_flit will lead to redundant
-      //      logic instantiation
-      let txion_allowed = fn_allow_flit ( arflit.araddr
-                                        , arflit.arlen
-                                        , arflit.arsize
-                                        , arflit.arburst
-                                        , unpack (truncateLSB (arflit.aruser)));
+      let txion_allowed = dw_req_allowed;
 
       rg_state <= txion_allowed ? FORWARD_R
                                 : DENY_R;
