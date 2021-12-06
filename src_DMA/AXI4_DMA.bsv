@@ -633,19 +633,22 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
 
 
 
-   // Uncomment this when compiling for outside use
-   //interface axi4s_data_master = dma_copy_unit.axi4s_data_master;
-   //interface axi4s_meta_master = dma_copy_unit.axi4s_meta_master;
 
-   //interface axi4s_data_slave = dma_copy_unit.axi4s_data_slave;
-   //interface axi4s_meta_slave = dma_copy_unit.axi4s_meta_slave;
-
+`ifdef BLUESIM
    // Uncomment this when compiling for simulation with loopback
    AXI4_Stream_Delay_Loopback_IFC #(strm_id_, sdata_, sdest_, suser_) axi4s_loopback <- mkAXI4_Stream_Delay_Loopback;
    mkConnection (dma_copy_unit.axi4s_data_master, axi4s_loopback.axi4s_data_slave);
    mkConnection (dma_copy_unit.axi4s_meta_master, axi4s_loopback.axi4s_meta_slave);
    mkConnection (dma_copy_unit.axi4s_data_slave, axi4s_loopback.axi4s_data_master);
    mkConnection (dma_copy_unit.axi4s_meta_slave, axi4s_loopback.axi4s_meta_master);
+`else
+   // Uncomment this when compiling for outside use
+   interface axi4s_data_master = dma_copy_unit.axi4s_data_master;
+   interface axi4s_meta_master = dma_copy_unit.axi4s_meta_master;
+
+   interface axi4s_data_slave = dma_copy_unit.axi4s_data_slave;
+   interface axi4s_meta_slave = dma_copy_unit.axi4s_meta_slave;
+`endif
 
    method s2mm_interrupt_req = ( ( dma_int_reg.s2mm_dmasr.err_irq & dma_int_reg.s2mm_dmacr.err_irqen )
                                | ( dma_int_reg.s2mm_dmasr.dly_irq & dma_int_reg.s2mm_dmacr.dly_irqen )
@@ -673,7 +676,9 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
       dma_reg.set_verbosity            (new_verb);
       dma_copy_unit.set_verbosity      (new_verb);
       dma_int_reg.set_verbosity        (new_verb);
+`ifdef BLUESIM
       axi4s_loopback.set_verbosity     (new_verb);
+`endif
 `ifdef DMA_CHERI
       sg_checker.set_verbosity         (new_verb);
       copy_checker.set_verbosity       (new_verb);
@@ -682,7 +687,9 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
 
    method Action reset;
       fa_reset;
+`ifdef BLUESIM
       axi4s_loopback.reset;
+`endif
    endmethod
 
 endmodule
