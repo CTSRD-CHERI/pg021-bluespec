@@ -263,12 +263,19 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    endrule
 
    // The Scatter Gather unit sets the trigger_callback signal high when it finishes
-   // an MM2S SG fetch.
-   // When the SG fetch is finished, we trigger the copying of the data
+   // a SG fetch.
+   // If the fetch was of a MM2S BD, we trigger the copying of the data.
+   // If the fetch was of a S2MM BD, we notify the copy unit that there is
+   // an available BD.
    rule rl_handle_sg_trigger_callback (rg_state != HALTED
                                        && rg_state != RESET
-                                       && axi_sg.trigger_callback);
-      dma_copy_unit.trigger;
+                                       && isValid (axi_sg.trigger_callback));
+      let dir = fromMaybe (?, axi_sg.trigger_callback);
+      if (dir == MM2S) begin
+         dma_copy_unit.trigger;
+      end else begin
+         dma_copy_unit.notify_bd;
+      end
    endrule
 
    // Trigger
@@ -365,9 +372,9 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
       $display ("AXI DMA: Error: Missed copy unit end trigger");
    endrule
 
-   rule rl_debug_trigger_callback (axi_sg.trigger_callback);
+   rule rl_debug_trigger_callback (isValid (axi_sg.trigger_callback));
       if (rg_verbosity > 1) begin
-         $display ("dma toplevel sees trigger_callback");
+         $display ("dma toplevel sees trigger_callback: ", fromMaybe (?, axi_sg.trigger_callback));
       end
    endrule
 

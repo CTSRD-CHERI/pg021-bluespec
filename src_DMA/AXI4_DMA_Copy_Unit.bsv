@@ -44,6 +44,8 @@ interface AXI4_DMA_Copy_Unit_IFC #(numeric type id_
 
    method Maybe #(DMA_Dir) end_trigger;
 
+   method Action notify_bd;
+
    method Action set_verbosity (Bit #(4) new_verb);
 
    method Action reset;
@@ -193,6 +195,11 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    // Keeps track of how many bytes have been sent out of the stream this transaction
    Reg #(Bit #(26)) rg_stream_out_count <- mkReg (0);
 
+   // Keeps track of whether a new Buffer Descriptor has been fetched by the
+   // Scatter Gather module for S2MM, so that we can block reception until a
+   // BD is available.
+   Reg #(Bool) rg_bd_available <- mkReg (False);
+
    RWire #(DMA_Dir) rw_end_trigger <- mkRWireSBR;
 
    // Whether making a request for (len+1) words would cross a 4KB boundary
@@ -258,6 +265,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
       rg_txion_in_flight <= False;
       rg_prev_arlen <= 0;
       rg_txion_counter <= 0;
+      rg_bd_available <= False;
 
       rg_state <= HALTED;
    endrule
@@ -275,6 +283,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    // TODO this assumes that whatever buffer descriptor we have is valid and
    // we can write to it
    rule rl_s2mm_metadata_transfer_start (rg_state == IDLE
+                                         && rg_bd_available
                                          && dma_int_reg.s2mm_dmasr.halted == 1'b0
                                          && axi4s_m_meta_shim.master.canPeek);
       if (rg_verbosity > 0) begin
@@ -511,12 +520,13 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
             $display ("DMA Copy Unit: finished s2mm transfer, going back to idle");
          end
          rg_state <= IDLE;
+         rg_bd_available <= False;
          rw_end_trigger.wset (S2MM);
          v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)] <= v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)]
-                                                    | {1'b1, 0};
+                                                    | {1'b1, 3'b0, 1'b1, 1'b1, 0};
          if (rg_verbosity > 1) begin
             $display ("DMA Copy Unit: Set S2MM Status to ", fshow (v_v_rg_bd[pack (S2MM)][pack (DMA_STATUS)]
-                                                    | {1'b1, 0}));
+                                                    | {1'b1, 3'b0, 1'b1, 1'b1, 0}));
          end
          rg_bresp_last <= False;
       end
@@ -861,6 +871,10 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_Reg_Word))) v_
    endmethod
 
    method Maybe #(DMA_Dir) end_trigger = rw_end_trigger.wget;
+
+   method Action notify_bd;
+      rg_bd_available <= True;
+   endmethod
 
    method Action set_verbosity (Bit #(4) new_verb);
       rg_verbosity <= new_verb;
