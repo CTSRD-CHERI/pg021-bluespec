@@ -45,10 +45,10 @@ interface AXI4_DMA_Scatter_Gather_IFC#(numeric type id_,
    // This will write the Buffer Descriptor that is in v_v_rg_bd back to memory
    method Action bd_write_to_mem (DMA_Dir dir, Bit #(addr_) start_address);
 
-   // Becomes True for one cycle when the Scatter Gather Unit finishes
-   // reading a MM2S Buffer Descriptor
+   // Becomes Valid for one cycle when the Scatter Gather Unit finishes
+   // reading a Buffer Descriptor
    (* always_ready *)
-   method Bool trigger_callback;
+   method Maybe #(DMA_Dir) trigger_callback;
 
    // Becomes valid with a direction for one cycle when the Scatter Gather
    // Unit finishes writing back a Buffer Descriptor in either direction
@@ -160,15 +160,15 @@ module mkAXI4_DMA_Scatter_Gather
    // Whether the current transaction gave us an error response
    Reg #(Bool) rg_received_err_rsp <- mkReg (False);
 
-   Reg #(Bool) drg_sg_finished <- mkDReg (False);
+   Reg #(Maybe #(DMA_Dir)) drg_sg_finished <- mkDReg (Invalid);
 
    RWire #(DMA_Dir) rw_trigger_interrupt <- mkRWire;
    RWire #(DMA_Err_Cause) rw_enq_halt_o <- mkRWire;
 
-   rule rl_debug_finished (drg_sg_finished);
+   rule rl_debug_finished (isValid (drg_sg_finished));
       if (rg_verbosity > 0) begin
-         $display ("drg_sg_finished is True");
-         $display ("    direction: ", fshow (cur_dir));
+         $display ("drg_sg_finished is Valid");
+         $display ("    direction: ", fshow (fromMaybe (?, drg_sg_finished)));
       end
    endrule
 
@@ -423,14 +423,10 @@ module mkAXI4_DMA_Scatter_Gather
                          " rg_req_len: ", fshow(rg_req_len));
             end else begin
                rg_state <= DMA_IDLE;
+               drg_sg_finished <= tagged Valid (crg_dir[1]);
                if (rg_verbosity > 0) begin
                   $display ("got enough responses from memory");
-               end
-               if (cur_dir == pack (MM2S)) begin
-                  if (rg_verbosity > 0) begin
-                     $display ("AXI4 SG Unit: triggering mm2s transfer after finishing SG read");
-                  end
-                  drg_sg_finished <= True;
+                  $display ("AXI4 SG Unit: notifying that SG is finished reading, direction: ", fshow (crg_dir[1]));
                end
             end
 
@@ -856,7 +852,7 @@ module mkAXI4_DMA_Scatter_Gather
     * Signal that we have finished doing an MM2S read, and the BD in
     * the registers is correct
     */
-   method Bool trigger_callback;
+   method Maybe #(DMA_Dir) trigger_callback;
       return drg_sg_finished;
    endmethod
 
