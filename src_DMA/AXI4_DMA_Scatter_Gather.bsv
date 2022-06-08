@@ -804,11 +804,18 @@ module mkAXI4_DMA_Scatter_Gather
          $display ("              write value: ", fshow(readVReg (v_v_rg_bd[pack (dir)])));
       end
 
+`ifdef DMA_CHERI
       rg_addr_bd_start <= start_addr + 'h20;
       rg_addr_bd_cur <= start_addr + 'h20;
       rg_state <= DMA_APP_WRITE_START;
       // TODO this will break with 32bit
       rg_bd_index <= DMA_CONTROL;
+`else
+      rg_addr_bd_start <= start_addr;
+      rg_addr_bd_cur <= start_addr;
+      rg_state <= DMA_MAIN_WRITE_START;
+      rg_bd_index <= minBound;
+`endif
       rg_rsp_count <= 0;
    endmethod
 
