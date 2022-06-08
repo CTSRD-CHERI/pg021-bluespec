@@ -134,6 +134,15 @@ module mkAXI4_DMA_Sig_Synth (AXI4_DMA_Sig_IFC);
    endinterface;
 endmodule
 
+(* synthesize *)
+module mkAXI4_DMA_Synth (AXI4_DMA_IFC #( Wd_MId_int, Wd_SId_int, Wd_Addr, Wd_Data
+                                       , Wd_AW_User, Wd_W_User, Wd_B_User
+                                       , Wd_AR_User, Wd_R_User
+                                       , 0, 32, 0, 0));
+   let dma <- mkAXI4_DMA;
+   return dma;
+endmodule
+
 module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                                   awuser_, wuser_, buser_,
                                   aruser_, ruser_,
