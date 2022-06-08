@@ -222,6 +222,8 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
 
    Reg #(Bit #(64)) rg_counter <- mkReg (0);
 
+   Wire #(Bool) dw_reset_req <- mkDWire (False);
+
    function Action fa_reset;
       action
          dma_reg.reset;
@@ -238,6 +240,8 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    endfunction
 
    rule rl_detect_reset (rg_state != RESET
+                         && !dw_reset_req  // can only reset based on registers if there wasn't
+                                           // already a reset requested by the parent module
                          && (dma_int_reg.mm2s_dmacr.reset == 1'b1
                              || dma_int_reg.s2mm_dmacr.reset == 1'b1));
       if (rg_verbosity > 0) begin
@@ -691,6 +695,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    endmethod
 
    method Action reset;
+      dw_reset_req <= True;
       fa_reset;
 `ifdef BLUESIM
       axi4s_loopback.reset;
