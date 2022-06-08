@@ -77,49 +77,51 @@ interface AXI4_DMA_IFC #(numeric type mid_,  // master id
    method Action reset;
 endinterface
 
-interface AXI4_DMA_Synth_IFC;
+interface AXI4_DMA_Sig_IFC;
    (* always_ready *) method Bool s2mm_interrupt_req;
    (* always_ready *) method Bool mm2s_interrupt_req;
    // AXI4 master used for Buffer Descriptor fetching and updating
-   interface AXI4_Master_Synth #(Wd_MId_4x4, Wd_Addr, Wd_Data,
+   interface AXI4_Master_Sig #(Wd_MId_int, Wd_Addr, Wd_Data,
                                  Wd_AW_User, Wd_W_User, Wd_B_User,
                                  Wd_AR_User, Wd_R_User) axi_sg_master;
    // AXI4 slave for writing and reading the DMA registers
-   interface AXI4_Slave_Synth #(Wd_SId_4x4, Wd_Addr, Wd_Data,
+   interface AXI4_Slave_Sig #(Wd_SId_int, Wd_Addr, Wd_Data,
                                 Wd_AW_User, Wd_W_User, Wd_B_User,
                                 Wd_AR_User, Wd_R_User) axi_reg_slave;
    // AXI4 master for reading and writing the data being copied by the DMA
-   interface AXI4_Master_Synth #(Wd_MId_4x4, Wd_Addr, Wd_Data,
+   interface AXI4_Master_Sig #(Wd_MId_int, Wd_Addr, Wd_Data,
                                  Wd_AW_User, Wd_W_User, Wd_B_User,
                                  Wd_AR_User, Wd_R_User) axi_copy_master;
 
    // AXI4 Stream masters for writing data and metadata
-   interface AXI4Stream_Master_Synth #(0, 32, 0, 0) axi4s_data_master;
-   interface AXI4Stream_Master_Synth #(0, 32, 0, 0) axi4s_meta_master;
+   interface AXI4Stream_Master_Sig #(0, 32, 0, 0) axi4s_data_master;
+   interface AXI4Stream_Master_Sig #(0, 32, 0, 0) axi4s_meta_master;
 
    // AXI4 Stream slaves for receiving data and metadata
-   interface AXI4Stream_Slave_Synth #(0, 32, 0, 0) axi4s_data_slave;
-   interface AXI4Stream_Slave_Synth #(0, 32, 0, 0) axi4s_meta_slave;
+   interface AXI4Stream_Slave_Sig #(0, 32, 0, 0) axi4s_data_slave;
+   interface AXI4Stream_Slave_Sig #(0, 32, 0, 0) axi4s_meta_slave;
 
    method Action set_verbosity (Bit #(4) new_verb);
    method Action reset;
 endinterface
 
 (* synthesize *)
-module mkAXI4_DMA_Synth (AXI4_DMA_Synth_IFC);
-   AXI4_DMA_IFC #( Wd_MId_4x4, Wd_SId_4x4, Wd_Addr, Wd_Data
+module mkAXI4_DMA_Sig_Synth (AXI4_DMA_Sig_IFC);
+   AXI4_DMA_IFC #( Wd_MId_int, Wd_SId_int, Wd_Addr, Wd_Data
                  , Wd_AW_User, Wd_W_User, Wd_B_User
                  , Wd_AR_User, Wd_R_User
                  , 0, 32, 0, 0) dma <- mkAXI4_DMA;
-   let axi_sg_master_s     <- toAXI4_Master_Synth (dma.axi_sg_master);
-   let axi_copy_master_s   <- toAXI4_Master_Synth (dma.axi_copy_master);
-   let axi_reg_slave_s <- toAXI4_Slave_Synth (dma.axi_reg_slave);
-   let axi4s_data_master_s <- toAXI4Stream_Master_Synth (dma.axi4s_data_master);
-   let axi4s_meta_master_s <- toAXI4Stream_Master_Synth (dma.axi4s_meta_master);
-   let axi4s_data_slave_s <- toAXI4Stream_Slave_Synth (dma.axi4s_data_slave);
-   let axi4s_meta_slave_s <- toAXI4Stream_Slave_Synth (dma.axi4s_meta_slave);
+   let axi_sg_master_s     <- toAXI4_Master_Sig (dma.axi_sg_master);
+   let axi_copy_master_s   <- toAXI4_Master_Sig (dma.axi_copy_master);
+   let axi_reg_slave_s <- toAXI4_Slave_Sig (dma.axi_reg_slave);
+   let axi4s_data_master_s <- toAXI4Stream_Master_Sig (dma.axi4s_data_master);
+   let axi4s_meta_master_s <- toAXI4Stream_Master_Sig (dma.axi4s_meta_master);
+   let axi4s_data_slave_s <- toAXI4Stream_Slave_Sig (dma.axi4s_data_slave);
+   let axi4s_meta_slave_s <- toAXI4Stream_Slave_Sig (dma.axi4s_meta_slave);
 
-   return interface AXI4_DMA_Synth_IFC
+   return interface AXI4_DMA_Sig_IFC
+      method s2mm_interrupt_req = dma.s2mm_interrupt_req;
+      method mm2s_interrupt_req = dma.mm2s_interrupt_req;
       interface axi_sg_master     = axi_sg_master_s;
       interface axi_copy_master   = axi_copy_master_s;
       interface axi_reg_slave     = axi_reg_slave_s;
@@ -127,6 +129,8 @@ module mkAXI4_DMA_Synth (AXI4_DMA_Synth_IFC);
       interface axi4s_meta_master = axi4s_meta_master_s;
       interface axi4s_data_slave  = axi4s_data_slave_s;
       interface axi4s_meta_slave  = axi4s_meta_slave_s;
+      method Action reset = dma.reset;
+      method set_verbosity = dma.set_verbosity;
    endinterface;
 endmodule
 
