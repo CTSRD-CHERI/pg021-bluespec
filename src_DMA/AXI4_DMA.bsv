@@ -225,6 +225,23 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    mkConnection (copy_checker.slave, fn_extend_ar_aw_user_fields (dma_copy_unit.axi4_master, {copy_unit_cap_tag ? 1'b1 : 1'b0, copy_unit_cap_val}));
 `endif
 
+
+`ifdef BLUESIM
+   AXI4_Stream_Delay_Loopback_IFC #(strm_id_, sdata_, sdest_, suser_) axi4s_loopback <- mkAXI4_Stream_Delay_Loopback (4000);
+   // Uncomment this and comment the lines after to use loopback
+   //mkConnection (dma_copy_unit.axi4s_data_master, axi4s_loopback.axi4s_data_slave);
+   //mkConnection (dma_copy_unit.axi4s_meta_master, axi4s_loopback.axi4s_meta_slave);
+   //mkConnection (dma_copy_unit.axi4s_data_slave, axi4s_loopback.axi4s_data_master);
+   //mkConnection (dma_copy_unit.axi4s_meta_slave, axi4s_loopback.axi4s_meta_master);
+
+   AXI4Stream_Eth_Source_IFC #(strm_id_, sdata_, sdest_, suser_) axi4s_eth_gen <- mkAXI4Stream_Eth_Source;
+   Sink #(AXI4Stream_Flit #(strm_id_, sdata_, sdest_, suser_)) nll = nullSink;
+   mkConnection (dma_copy_unit.axi4s_data_master, nll);
+   mkConnection (dma_copy_unit.axi4s_meta_master, nll);
+   mkConnection (dma_copy_unit.axi4s_data_slave, axi4s_eth_gen.axi4s_data_m);
+   mkConnection (dma_copy_unit.axi4s_meta_slave, axi4s_eth_gen.axi4s_meta_m);
+`endif
+
    // FIFO containing triggers from the Register Module
    FIFOF #(DMA_Dir) fifo_trigger <- mkFIFOF1;
 
@@ -249,6 +266,10 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
          rg_mm2s_hit_tail <= True;
          rg_s2mm_hit_tail <= True;
          rg_fetch_after_intr <= False;
+`ifdef BLUESIM
+         axi4s_loopback.reset;
+         axi4s_eth_gen.reset;
+`endif
       endaction
    endfunction
 
@@ -656,14 +677,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    endrule
 
 
-`ifdef BLUESIM
-   // Uncomment this when compiling for simulation with loopback
-   AXI4_Stream_Delay_Loopback_IFC #(strm_id_, sdata_, sdest_, suser_) axi4s_loopback <- mkAXI4_Stream_Delay_Loopback;
-   mkConnection (dma_copy_unit.axi4s_data_master, axi4s_loopback.axi4s_data_slave);
-   mkConnection (dma_copy_unit.axi4s_meta_master, axi4s_loopback.axi4s_meta_slave);
-   mkConnection (dma_copy_unit.axi4s_data_slave, axi4s_loopback.axi4s_data_master);
-   mkConnection (dma_copy_unit.axi4s_meta_slave, axi4s_loopback.axi4s_meta_master);
-`else
+`ifndef BLUESIM
    // Uncomment this when compiling for outside use
    interface axi4s_data_master = dma_copy_unit.axi4s_data_master;
    interface axi4s_meta_master = dma_copy_unit.axi4s_meta_master;
@@ -710,9 +724,6 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    method Action reset;
       dw_reset_req <= True;
       fa_reset;
-`ifdef BLUESIM
-      axi4s_loopback.reset;
-`endif
    endmethod
 
 endmodule

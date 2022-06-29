@@ -2,6 +2,7 @@ package AXI4_DMA_Utils;
 
 // Bluespec imports
 import FIFOF :: *;
+import Vector :: *;
 
 // AXI imports
 import AXI :: *;
@@ -102,7 +103,7 @@ interface AXI4_Stream_Delay_Loopback_IFC #(numeric type strm_id_,
    method Action set_verbosity (Bit #(4) new_verb);
    method Action reset;
 endinterface
-module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, sdata_, sdest_, suser_));
+module mkAXI4_Stream_Delay_Loopback #(Integer delay) (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, sdata_, sdest_, suser_));
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
    FIFOF #(Bit #(sdata_)) data_fifo <- mkUGSizedFIFOF (1024);
    FIFOF #(Bit #(sdata_)) meta_fifo <- mkUGSizedFIFOF (8);
@@ -170,7 +171,7 @@ module mkAXI4_Stream_Delay_Loopback (AXI4_Stream_Delay_Loopback_IFC #(strm_id_, 
 
    rule rl_incr_tick (rg_input_started && rg_input_finished && !rg_output_trigger);
       rg_tick_counter <= rg_tick_counter + 1;
-      if (rg_tick_counter > 300) begin
+      if (rg_tick_counter > fromInteger (delay)) begin
          if (rg_verbosity > 0) begin
             $display ("AXI4 Stream Delay Loopback: delay finished");
          end
@@ -365,4 +366,99 @@ function AXI4_Master #(id_, addr_, data_,
       interface Sink r = m.r;
    endinterface;
 endfunction
+
+interface AXI4Stream_Eth_Source_IFC #(numeric type id_
+                                     , numeric type data_
+                                     , numeric type dest_
+                                     , numeric type user_);
+
+   interface AXI4Stream_Master #(id_, data_, dest_, user_) axi4s_meta_m;
+   interface AXI4Stream_Master #(id_, data_, dest_, user_) axi4s_data_m;
+   method Action reset;
+endinterface
+
+module mkAXI4Stream_Eth_Source (AXI4Stream_Eth_Source_IFC #(id_, data_, dest_, user_))
+   provisos ( Add #(a__, 32, data_)
+            , Add #(b__, 1, TDiv #(data_, 8)));
+   Reg #(Bool) rg_meta_not_data <- mkReg (True);
+   Reg #(Bit #(TLog #(32))) rg_ctr <- mkReg (0);
+   Wire #(Bool) dw_rst <- mkDWire (False);
+
+   Vector #(6, Bit #(32)) v_meta = newVector;
+   v_meta[0] = 'h00000000 v_meta[1] = 'h00000000 v_meta[2] = 'h00000000
+   v_meta[3] = 'h00000000 v_meta[4] = 'h00000000 v_meta[5] = 'h00000000
+
+   Vector #(13, Bit #(32)) v_data = newVector;
+   v_data[0]  = 'h00000000
+   v_data[1]  = 'h00000000
+   v_data[2]  = 'h00000000
+   v_data[3]  = 'h00000000
+   v_data[4]  = 'h00000000
+   v_data[5]  = 'h00000000
+   v_data[6]  = 'h00000000
+   v_data[7]  = 'h00000000
+   v_data[8]  = 'h00000000
+   v_data[9]  = 'h00000000
+   v_data[10] = 'h00000000
+   v_data[11] = 'h00000000
+   v_data[12] = 'h00000000
+
+   let meta_shim <- mkAXI4StreamShimUGFF;
+   let meta_s = meta_shim.slave;
+   let data_shim <- mkAXI4StreamShimUGFF;
+   let data_s = data_shim.slave;
+
+   rule rl_send_meta (!dw_rst
+                      && rg_meta_not_data
+                      && meta_s.canPut);
+      if (rg_ctr < 6) begin
+         rg_ctr <= rg_ctr + 1;
+         meta_s.put (AXI4Stream_Flit { tid: 0
+                                     , tdest: 0
+                                     , tuser: 0
+                                     , tdata: zeroExtend (v_meta[rg_ctr])
+                                     , tstrb: signExtend (1'b1)
+                                     , tkeep: signExtend (1'b1)
+                                     , tlast: rg_ctr == 5 });
+      end else begin
+         rg_ctr <= 0;
+         rg_meta_not_data <= False;
+      end
+   endrule
+
+   rule rl_send_data (!dw_rst
+                      && !rg_meta_not_data
+                      && data_s.canPut);
+      if (rg_ctr < 13) begin
+         rg_ctr <= rg_ctr + 1;
+         data_s.put (AXI4Stream_Flit { tid: 0
+                                     , tdest: 0
+                                     , tuser: 0
+                                     , tdata: zeroExtend (v_data[rg_ctr])
+                                     , tstrb: signExtend (1'b1)
+                                     , tkeep: signExtend (1'b1)
+                                     , tlast: rg_ctr == 12 });
+      end else begin
+         rg_ctr <= 0;
+         rg_meta_not_data <= True;
+      end
+   endrule
+
+
+   interface axi4s_meta_m = debugAXI4Stream_Master (meta_shim.master, $format ("meta: "));
+   interface axi4s_data_m = debugAXI4Stream_Master (data_shim.master, $format ("data: "));
+
+
+   method Action reset;
+      $display ("resetting eth source");
+      dw_rst <= True;
+      data_shim.clear;
+      meta_shim.clear;
+      rg_meta_not_data <= True;
+      rg_ctr <= 0;
+   endmethod
+endmodule
+
+
+
 endpackage
