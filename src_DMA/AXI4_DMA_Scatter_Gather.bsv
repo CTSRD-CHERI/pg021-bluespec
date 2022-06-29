@@ -473,7 +473,12 @@ module mkAXI4_DMA_Scatter_Gather
       // NOTE burst length = awlen + 1
       let write_app = rg_state == DMA_APP_WRITE_START;
       // TODO remove hardwired 5?
-      AXI4_Len len = write_app ? 8    // write only the application words
+      AXI4_Len len = write_app ?
+`ifdef DMA_CHERI
+                                 8    // when using DMA_CHERI, the "app words" also include control/status words
+`else
+                                 5    // write only the application words
+`endif
                                  - 1  // burst size is arlen + 1
                                : fromInteger (valueOf (DMA_Num_Words))
                                  - 5  // don't write application words
@@ -657,7 +662,9 @@ module mkAXI4_DMA_Scatter_Gather
       rg_state <= write_app ? iserr ? DMA_IDLE
                                     : DMA_IDLE
                             : DMA_APP_WRITE_START;
-      rw_trigger_interrupt.wset (crg_dir[0]);
+      if (write_app) begin
+         rw_trigger_interrupt.wset (crg_dir[0]);
+      end
       if (iserr) begin
          $display ("AXI4 SG Unit: ERROR: DMA RECEIVED WRITE ERROR RESPONSE");
       end

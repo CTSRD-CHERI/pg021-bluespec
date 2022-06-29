@@ -58,7 +58,8 @@ endinterface
 
 module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
                                     Reg #(Bool) rg_mm2s_hit_tail,
-                                    Reg #(Bool) rg_s2mm_hit_tail)
+                                    Reg #(Bool) rg_s2mm_hit_tail,
+                                    DMA_State state_outer)
                                    (AXI4_DMA_Register_Module_IFC #(id_, addr_, data_, awuser_, wuser_, buser_, aruser_, ruser_))
                                    provisos ( Add #(a__, SizeOf #(DMA_Reg_Index), addr_)
                                             , Add #(b__, SizeOf #(DMA_Reg_Word), data_)
@@ -129,6 +130,9 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
                           || rg_state == HALTED)
                          && serialiser.aw.canPeek
                          && serialiser.w.canPeek);
+      if (rg_verbosity > 0) begin
+         $display ("%m Register Module: rl_handle_write");
+      end
       let awflit = serialiser.aw.peek;
       let wflit = serialiser.w.peek;
       DMA_Reg_Index idx = unpack (truncate (awflit.awaddr >> 2));
@@ -225,55 +229,72 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
       // trigger_index_s2mm and trigger_index_mm2s should be compile-time constant values
       // based on whether the address field is 32 or 64 bits
       if (is_valid_request) begin
+         let interrupt_active = ( ( dma_int_reg.s2mm_dmasr.err_irq & dma_int_reg.s2mm_dmacr.err_irqen )
+                                | ( dma_int_reg.s2mm_dmasr.dly_irq & dma_int_reg.s2mm_dmacr.dly_irqen )
+                                | ( dma_int_reg.s2mm_dmasr.ioc_irq & dma_int_reg.s2mm_dmacr.ioc_irqen )
+                                | ( dma_int_reg.mm2s_dmasr.err_irq & dma_int_reg.mm2s_dmacr.err_irqen )
+                                | ( dma_int_reg.mm2s_dmasr.dly_irq & dma_int_reg.mm2s_dmacr.dly_irqen )
+                                | ( dma_int_reg.mm2s_dmasr.ioc_irq & dma_int_reg.mm2s_dmacr.ioc_irqen )
+                                ) == 1'b1;
          if (idx == trigger_index_s2mm) begin
+            if (rg_verbosity > 1) begin
+               $display ("    s2mm trigger register written, external state:  ", fshow (state_outer));
+            end
             // only trigger if we had already hit the tail
             // TODO handle 32-bit addresses
             let cur_addr = {pack (dma_int_reg.s2mm_curdesc_msb), pack (dma_int_reg.s2mm_curdesc)};
             let cur_tail = {pack (newval), pack (dma_int_reg.s2mm_taildesc)};
 
-            if (rg_s2mm_hit_tail && cur_tail > cur_addr) begin
+            if (state_outer == DMA_IDLE && rg_s2mm_hit_tail && !interrupt_active) begin
                // We had hit the previous tail, and the new tail is at a higher
                // memory address than our current address, so we can fetch
                // a new buffer descriptor
                rw_trigger.wset (S2MM);
                rg_s2mm_hit_tail <= False;
                if (rg_verbosity > 0) begin
-                  $display ("triggering s2mm SG fetch");
+                  $display ("    triggering s2mm SG fetch");
+                  $display ("    cur_tail: ", fshow (cur_tail));
+                  $display ("    cur_addr: ", fshow (cur_addr));
                end
             end else begin
                // Print debug information in the case where we skip the SG fetch trigger
                if (rg_verbosity > 0) begin
-                  $display ("skipping s2mm SG fetch trigger");
+                  $display ("    skipping s2mm SG fetch trigger");
                end
                if (rg_verbosity > 1) begin
-                  $display ("    cur_addr: ", fshow (cur_addr));
+                  $display ("    cur_addr:  ", fshow (cur_addr));
                   $display ("    cur_tail: ", fshow (cur_tail));
                end
             end
          end else if (idx == trigger_index_mm2s) begin
+            if (rg_verbosity > 1) begin
+               $display ("    mm2s trigger register written, external state: ", fshow (state_outer));
+            end
             // only trigger if we had already run out of BDs
             // TODO handle 32-bit addresses
-            let cur_addr = {pack (dma_int_reg.s2mm_curdesc_msb), pack (dma_int_reg.s2mm_curdesc)};
-            let cur_tail = {pack (newval), pack (dma_int_reg.s2mm_taildesc)};
+            let cur_addr = {pack (dma_int_reg.mm2s_curdesc_msb), pack (dma_int_reg.mm2s_curdesc)};
+            let cur_tail = {pack (newval), pack (dma_int_reg.mm2s_taildesc)};
 
-            if (rg_mm2s_hit_tail && cur_tail > cur_addr) begin
+            if (state_outer == DMA_IDLE && rg_mm2s_hit_tail && !interrupt_active) begin
                // We had hit the previous tail, and the new tail is at a higher
                // memory address than our current address, so we can fetch
                // a new buffer descriptor
                rw_trigger.wset (MM2S);
                rg_mm2s_hit_tail <= False;
                if (rg_verbosity > 0) begin
-                  $display ("triggering mm2s SG fetch");
+                  $display ("    triggering mm2s SG fetch");
+                  $display ("    cur_tail: ", fshow (cur_tail));
+                  $display ("    cur_addr: ", fshow (cur_addr));
                end
             end else begin
                // Print debug information in the case where we skip the SG fetch trigger
                if (rg_verbosity > 0) begin
-                  $display ("skipping mm2s SG fetch trigger");
+                  $display ("    skipping mm2s SG fetch trigger");
                end
                if (rg_verbosity > 1) begin
                   $display ("    cur_addr: ", fshow (cur_addr));
-                  $display ("    curdesc_msb: ", fshow (pack (dma_int_reg.s2mm_curdesc_msb)));
-                  $display ("    curdesc: ", fshow (pack (dma_int_reg.s2mm_curdesc)));
+                  $display ("    curdesc_msb: ", fshow (pack (dma_int_reg.mm2s_curdesc_msb)));
+                  $display ("    curdesc: ", fshow (pack (dma_int_reg.mm2s_curdesc)));
                   $display ("    cur_tail: ", fshow (cur_tail));
                end
             end

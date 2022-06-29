@@ -29,12 +29,6 @@ import CHERICC_Fat :: *;
 
 import Fabric_Defs :: *;
 
-typedef enum {
-   RESET,
-   HALTING_WAIT_RSP,
-   HALTED,
-   IDLE
-} DMA_State deriving (Bits, FShow, Eq);
 
 interface AXI4_DMA_IFC #(numeric type mid_,  // master id
                          numeric type sid_,  // slave id
@@ -171,7 +165,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                            );
 
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
-   Reg #(DMA_State) rg_state <- mkReg (HALTED);
+   Reg #(DMA_State) rg_state <- mkReg (DMA_HALTED);
 
    Reg #(Bool) rg_mm2s_first_fetch <- mkReg (True);
    Reg #(Bool) rg_s2mm_first_fetch <- mkReg (True);
@@ -194,12 +188,13 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
                                   awuser_, wuser_, buser_,
                                   aruser_, ruser_) dma_reg <- mkAXI4_DMA_Register_Module (dma_int_reg,
                                                                                           rg_mm2s_hit_tail,
-                                                                                          rg_s2mm_hit_tail);
+                                                                                          rg_s2mm_hit_tail,
+                                                                                          rg_state);
 
    AXI4_DMA_Copy_Unit_IFC #(mid_, addr_, data_,
                             awuser_, wuser_, buser_,
                             aruser_, ruser_,
-                            strm_id_, sdata_, sdest_, suser_) dma_copy_unit <- mkAXI4_DMA_Copy_Unit (v_v_rg_bd, dma_int_reg);
+                            strm_id_, sdata_, sdest_, suser_) dma_copy_unit <- mkAXI4_DMA_Copy_Unit (v_v_rg_bd, rg_state, dma_int_reg);
 
 `ifdef DMA_CHERI
    CHERI_Checker_IFC #(mid_, addr_, data_,
@@ -260,7 +255,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
          axi_sg.reset;
          dma_copy_unit.reset;
          dma_int_reg.reset;
-         rg_state <= RESET;
+         rg_state <= DMA_RESET;
          rg_mm2s_first_fetch <= True;
          rg_s2mm_first_fetch <= True;
          rg_mm2s_hit_tail <= True;
@@ -273,7 +268,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
       endaction
    endfunction
 
-   rule rl_detect_reset (rg_state != RESET
+   rule rl_detect_reset (rg_state != DMA_RESET
                          && !dw_reset_req  // can only reset based on registers if there wasn't
                                            // already a reset requested by the parent module
                          && (dma_int_reg.mm2s_dmacr.reset == 1'b1
@@ -288,15 +283,15 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
       fa_reset;
    endrule
 
-   rule rl_reset (rg_state == RESET);
+   rule rl_reset (rg_state == DMA_RESET);
       if (rg_verbosity > 0) begin
          $display ("AXI4 DMA Reset");
       end
       rg_counter <= 0;
-      rg_state <= HALTED;
+      rg_state <= DMA_HALTED;
    endrule
 
-   rule rl_increment_counter (rg_state == IDLE);
+   rule rl_increment_counter (rg_state == DMA_IDLE);
       rg_counter <= rg_counter + 1;
    endrule
 
@@ -317,12 +312,12 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    // is one of the capability registers, in which case it cannot set
    // get_halt_to_idle so this rule does not get executed
    (* conflict_free="rl_halt_to_idle,dma_reg_rl_handle_write" *)
-   rule rl_halt_to_idle (rg_state == HALTED
+   rule rl_halt_to_idle (rg_state == DMA_HALTED
                          && dma_reg.get_halt_to_idle);
       if (rg_verbosity > 1) begin
          $display ("DMA Unit: toplevel halt to idle");
       end
-      rg_state <= IDLE;
+      rg_state <= DMA_IDLE;
       dma_reg.halt_to_idle;
       axi_sg.halt_to_idle;
       dma_copy_unit.halt_to_idle;
@@ -331,8 +326,12 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    // Handle enqueueing triggers received from the Register Unit
    // These happen when the tail descriptor registers are written to
    // with a value that causes us to have to do something
-   rule rl_enq_reg_trigger (rg_state == IDLE
-                            && isValid (dma_reg.trigger));
+   // There is a corner case where this occurs on the same cycle as an SG callback;
+   // to handle this, the SG callback takes priority
+   rule rl_enq_reg_trigger (rg_state == DMA_IDLE
+                            && isValid (dma_reg.trigger)
+                            && !(isValid (axi_sg.trigger_callback))
+                            );
       let dir = fromMaybe (?, dma_reg.trigger);
       if (rg_verbosity > 0) begin
          $display ("DMA Unit: enqueued to trigger fifo, direction: ", fshow (dir));
@@ -352,7 +351,10 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    // The trigger is enqueued into the fifo above.
    // This rule deals with dequeueing it and handling the operations that need
    // to be done because of the trigger
-   rule rl_handle_trigger (rg_state == IDLE);
+   rule rl_handle_trigger (rg_state == DMA_IDLE);
+      if (rg_verbosity > 0) begin
+         $display ("%m AXI4_DMA rl_handle_trigger");
+      end
       let dir = fifo_trigger.first;
       fifo_trigger.deq;
 
@@ -397,6 +399,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
 `endif
          axi_sg.bd_read_from_mem(MM2S, address);
          rg_mm2s_first_fetch <= False;
+         rg_state <= DMA_RUNNING_MM2S_BDFETCH;
       end else begin
          // There have been instances in the past where the bluespec compiler has not collapsed
          // two signals that should be the same (here dir_local and dir) into one. This is done
@@ -437,6 +440,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
 `endif
          axi_sg.bd_read_from_mem(S2MM, address);
          rg_s2mm_first_fetch <= False;
+         rg_state <= DMA_RUNNING_S2MM_BDFETCH;
       end
    endrule
 
@@ -445,29 +449,46 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    // If the fetch was of a MM2S BD, we trigger the copying of the data.
    // If the fetch was of a S2MM BD, we notify the copy unit that there is
    // an available BD.
-   rule rl_handle_sg_trigger_callback (rg_state == IDLE
+   rule rl_handle_sg_trigger_callback ((rg_state == DMA_RUNNING_MM2S_BDFETCH
+                                        || rg_state == DMA_RUNNING_S2MM_BDFETCH)
                                        && isValid (axi_sg.trigger_callback));
       let dir = fromMaybe (?, axi_sg.trigger_callback);
       if (dir == MM2S) begin
          dma_copy_unit.trigger;
+         rg_state <= DMA_RUNNING_MM2S_COPY;
       end else begin
          dma_copy_unit.notify_bd;
+         rg_state <= DMA_IDLE;
       end
    endrule
 
    // Trigger
-   rule rl_enq_copy_unit_end_trigger (rg_state == IDLE
+   // We can receive triggers from the copy unit when in DMA_RUNNING_S2MM_COPY(for receiving
+   // data, which is initiated by the stream) or in DMA_RUNNING_MM2S_COPY (for sending data,
+   // which is initiated by writing registers and requires a SG to be
+   // initiated beforehand)
+   rule rl_enq_copy_unit_end_trigger ((rg_state == DMA_RUNNING_S2MM_COPY || rg_state == DMA_RUNNING_MM2S_COPY)
                                       && isValid (dma_copy_unit.end_trigger));
       fifo_copy_unit_end_trigger.enq (fromMaybe (?, dma_copy_unit.end_trigger));
+   endrule
+
+   rule rl_copy_unit_start_trigger (rg_state == DMA_IDLE && dma_copy_unit.s2mm_start_trigger);
+      if (rg_verbosity > 0) begin
+         $display ("%m AXI4_DMA: rl_copy_unit_start_trigger");
+      end
+      rg_state <= DMA_RUNNING_S2MM_COPY;
    endrule
 
    // Handle writing back the buffer descriptor after the end of a memory copy.
    // All the BD data should already have been updated
    (* conflict_free="rl_handle_copy_unit_end_trigger,dma_copy_unit_rl_s2mm_handle_bresp" *)
    (* conflict_free="rl_handle_copy_unit_end_trigger,dma_copy_unit_rl_mm2s_update_state" *)
-   rule rl_handle_copy_unit_end_trigger (rg_state == IDLE);
+   (* mutually_exclusive="rl_handle_sg_trigger_callback,rl_handle_copy_unit_end_trigger" *)
+   rule rl_handle_copy_unit_end_trigger (rg_state == DMA_RUNNING_S2MM_COPY || rg_state == DMA_RUNNING_MM2S_COPY);
       fifo_copy_unit_end_trigger.deq;
       let dir = fifo_copy_unit_end_trigger.first;
+      rg_state <= dir == MM2S ? DMA_RUNNING_MM2S_BDWRITE
+                              : DMA_RUNNING_S2MM_BDWRITE;
 
       // TODO handle 32-bit addresses
       let cur_addr = dir == MM2S ? {pack (dma_int_reg.mm2s_curdesc_msb), pack (dma_int_reg.mm2s_curdesc)}
@@ -500,7 +521,9 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    // in the appropriate registers
    // We also fetch the next available BD
    // TODO implement interrupt thresholds and delay interrupts
-   rule rl_handle_sg_interrupt (isValid (axi_sg.trigger_interrupt));
+   rule rl_handle_sg_interrupt ((rg_state == DMA_RUNNING_MM2S_BDWRITE
+                                 || rg_state == DMA_RUNNING_S2MM_BDWRITE)
+                                && isValid (axi_sg.trigger_interrupt));
       let dir = fromMaybe (?, axi_sg.trigger_interrupt);
       if (rg_verbosity > 0) begin
          $display ("AXI DMA: handling SG interrupt trigger in direction ", fshow (dir));
@@ -513,6 +536,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
             $display ("    old DMASR value: ", fshow (dma_int_reg.mm2s_dmasr));
             $display ("    value written: ", fshow (val_to_write));
          end
+         rg_state <= DMA_IDLE;
       end else begin
          let val_to_write = dma_int_reg.s2mm_dmasr;
          val_to_write.ioc_irq = 1'b1;
@@ -532,7 +556,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    // Runs the cycle after receiving a SG interrupt, which happens when
    // the SG unit finishes writing a BD back to main memory.
    // Gets the new BD from memory, to be ready for the next transaction
-   rule rl_handle_sg_fetch_after_write_s2mm (rg_state == IDLE
+   rule rl_handle_sg_fetch_after_write_s2mm (rg_state == DMA_RUNNING_S2MM_BDWRITE
                                              && rg_fetch_after_intr);
       DMA_Dir dir_local = S2MM;
       rg_fetch_after_intr <= False;
@@ -548,6 +572,7 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
       dma_int_reg.s2mm_curdesc_write (unpack (truncate (address) & pack (s2mm_curdesc_rw_mask_halted)));
       dma_int_reg.s2mm_curdesc_msb_write (unpack (truncateLSB (address) & pack (s2mm_curdesc_rw_mask)));
       axi_sg.bd_read_from_mem (S2MM, address);
+      rg_state <= DMA_RUNNING_S2MM_BDFETCH;
    endrule
 
    rule rl_handle_halt_req (isValid (axi_sg.enq_halt_o)
@@ -640,17 +665,17 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
          $display ("    wrote S2MM DMACR with ", s2mm_dmacr);
       end
 
-      rg_state <= HALTING_WAIT_RSP;
+      rg_state <= DMA_HALTING_WAIT_RSP;
       dma_reg.srv_halt.request.put (?);
       dma_copy_unit.srv_halt.request.put (?);
       axi_sg.srv_halt.request.put (?);
    endrule
 
-   rule rl_handle_halt_rsp (rg_state == HALTING_WAIT_RSP);
+   rule rl_handle_halt_rsp (rg_state == DMA_HALTING_WAIT_RSP);
       let reg_rsp <- dma_reg.srv_halt.response.get;
       let copy_rsp <- dma_copy_unit.srv_halt.response.get;
       let sg_rsp <- axi_sg.srv_halt.response.get;
-      rg_state <= HALTED;
+      rg_state <= DMA_HALTED;
 
       let mm2s_dmasr = dma_int_reg.mm2s_dmasr;
       let s2mm_dmasr = dma_int_reg.s2mm_dmasr;
@@ -661,13 +686,15 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    endrule
 
    rule rl_debug_enq_copy_unit_end_trigger (isValid (dma_copy_unit.end_trigger)
-                                               && !fifo_copy_unit_end_trigger.notFull);
-      $display ("AXI DMA: Error: Missed copy unit end trigger");
+                                            && (!fifo_copy_unit_end_trigger.notFull
+                                                || !(rg_state == DMA_RUNNING_MM2S_COPY
+                                                     || rg_state == DMA_RUNNING_S2MM_COPY)));
+      $display ("AXI DMA: Error: Missed copy unit end trigger, state: ", rg_state);
    endrule
 
    rule rl_debug_trigger_callback (isValid (axi_sg.trigger_callback));
       if (rg_verbosity > 1) begin
-         $display ("dma toplevel sees trigger_callback: ", fromMaybe (?, axi_sg.trigger_callback));
+         $display ("dma toplevel sees trigger_callback: ", fromMaybe (?, axi_sg.trigger_callback), "  state: ", fshow (rg_state));
       end
    endrule
 

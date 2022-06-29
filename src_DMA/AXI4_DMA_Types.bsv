@@ -3,6 +3,19 @@ package AXI4_DMA_Types;
 `define ZEROES signExtend (1'b0)
 `define ONES  signExtend (1'b1)
 
+typedef enum {
+   DMA_RESET,
+   DMA_HALTING_WAIT_RSP,
+   DMA_HALTED,
+   DMA_IDLE,
+   DMA_RUNNING_MM2S_BDFETCH,
+   DMA_RUNNING_MM2S_COPY,
+   DMA_RUNNING_MM2S_BDWRITE,
+   DMA_RUNNING_S2MM_BDFETCH,
+   DMA_RUNNING_S2MM_COPY,
+   DMA_RUNNING_S2MM_BDWRITE
+} DMA_State deriving (Bits, FShow, Eq);
+
 // Direct Memory Access Buffer Descriptor struct
 // This is not used anywhere except for calculating the number of words
 // immediately below

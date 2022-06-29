@@ -45,6 +45,9 @@ interface AXI4_DMA_Copy_Unit_IFC #(numeric type id_
 
    method Action trigger;
 
+   // True when the stream has just started sending data, otherwise false
+   method Bool s2mm_start_trigger;
+
    method Maybe #(DMA_Dir) end_trigger;
 
    method DMA_Dir current_dir;
@@ -75,6 +78,7 @@ typedef enum {
 // at instantiation.
 // TODO for now this assumes that all buffers start at addresses that are at least 32-bit aligned
 module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) v_v_rg_bd,
+                              DMA_State state_outer,
                               AXI4_DMA_Int_Reg_IFC dma_int_reg)
                             (AXI4_DMA_Copy_Unit_IFC #(id_, addr_, data_,
                                                       awuser_, wuser_, buser_,
@@ -214,6 +218,9 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    RWire #(DMA_Dir) rw_end_trigger <- mkRWireSBR;
    RWire #(DMA_Err_Cause) rw_enq_halt_o <- mkRWire;
 
+   // True when the stream has just started sending data, otherwise false
+   Wire #(Bool) dw_s2mm_start_trigger <- mkDWire (False);
+
    // Whether making a request for (len+1) words would cross a 4KB boundary
    // (crossing 4KB boundaries in a burst is not allowed in AXI)
    // Alternative phrasing: whether the last byte that will be requested by a transaction
@@ -295,6 +302,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    // TODO this assumes that whatever buffer descriptor we have is valid and
    // we can write to it
    rule rl_s2mm_metadata_transfer_start (rg_state == IDLE
+                                         && state_outer == DMA_IDLE
                                          && rg_bd_available
                                          && dma_int_reg.s2mm_dmasr.halted == 1'b0
                                          && axi4s_m_meta_ugshim_master.canPeek);
@@ -319,6 +327,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
 
       axi4s_m_meta_ugshim_master.drop;
       rg_state <= META_RECEIVE_S2MM;
+      dw_s2mm_start_trigger <= True;
       // start the counter at zero for code clarity (we can just add the counter to
       // the address of _APP0 to get which word we are changing now)
       rg_meta_counter <= 0;
@@ -327,6 +336,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    // Receive the rest of the metadata for this ethernet frame, and
    // update the Buffer Descriptor application fields accordingly
    rule rl_s2mm_metadata_receive (rg_state == META_RECEIVE_S2MM
+                                  && state_outer == DMA_RUNNING_S2MM_COPY
                                   && axi4s_m_meta_ugshim_master.canPeek);
       axi4s_m_meta_ugshim_master.drop;
       if (rg_verbosity > 1) begin
@@ -370,8 +380,9 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    // We need to buffer some of this data in order to know how big our
    // AWFlit should be, so we don't yet send out an AWFlit
    rule rl_s2mm_data_transfer_start (rg_state == META_RECEIVE_S2MM
-                                && rg_meta_counter == 5
-                                && axi4s_m_data_ugshim_master.canPeek);
+                                     && state_outer == DMA_RUNNING_S2MM_COPY
+                                     && rg_meta_counter == 5
+                                     && axi4s_m_data_ugshim_master.canPeek);
       if (rg_verbosity > 0) begin
          $display ("AXI4 DMA Copy Unit starting S2MM transfer");
       end
@@ -393,6 +404,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    // are not allowed, and that all except the last word transferred must
    // have tkeep = 'hf and tstrb = 'hf
    rule rl_s2mm_deq_from_stream (rg_state == COPYING
+                                 && state_outer == DMA_RUNNING_S2MM_COPY
                                  && crg_dir[0] == S2MM
                                  && axi4s_m_data_ugshim_master.canPeek
                                  && fifo_data.notFull);
@@ -440,6 +452,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    rule rl_s2mm_produce_awflit (crg_dir[0] == S2MM
                                 && ((rg_state == COPYING && fifo_data.count > 7) // there is enough data for an 8-flit burst
                                     || (rg_state == WAIT_FOR_FINAL_DEQ))       // we have received the last flit from the stream
+                                && state_outer == DMA_RUNNING_S2MM_COPY
                                 && fifo_data.notEmpty
                                 && ugshim_slave.aw.canPut
                                 && !rg_txion_in_flight
@@ -505,6 +518,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    // from the FIFOs and push a WFlit to our AXI4 slave
    rule rl_s2mm_produce_wflit (crg_dir[0] == S2MM
                               && (rg_state == COPYING || rg_state == WAIT_FOR_FINAL_DEQ)
+                              && state_outer == DMA_RUNNING_S2MM_COPY
                               && rg_txion_in_flight
                               && ugshim_slave.w.canPut
                               && fifo_data.notEmpty);
@@ -539,6 +553,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    // if this is the last B response we expect to receive, transition into the idle
    // state, write back the required registers, and update the trigger
    rule rl_s2mm_handle_bresp ((rg_state == COPYING || rg_state == WAIT_FOR_FINAL_DEQ)
+                              && state_outer == DMA_RUNNING_S2MM_COPY
                               && rg_bresp_required
                               && crg_dir[0] == S2MM
                               && ugshim_slave.b.canPeek);
@@ -580,7 +595,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
       end else begin
          if (rg_bresp_last) begin
             if (rg_verbosity > 0) begin
-               $display ("DMA Copy Unit: finished s2mm transfer, going back to idle");
+               $display ("DMA Copy Unit: finished s2mm transfer, going back to idle, outer state: ", fshow (state_outer));
             end
             rg_state <= IDLE;
             rg_bd_available <= False;
@@ -607,6 +622,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
 
    // Start off with transferring metadata on the metadata stream
    rule rl_mm2s_meta_transfer (rg_state == META_SEND_MM2S
+                               && state_outer == DMA_RUNNING_MM2S_COPY
                                && axi4s_s_meta_ugshim_slave.canPut);
       AXI4Stream_Flit #(sid_, sdata_, sdest_, suser_) flit = AXI4Stream_Flit {
          tdata: zeroExtend (v_v_rg_bd[pack (MM2S)][pack (DMA_APP0) + zeroExtend (rg_meta_counter)].word),
@@ -632,6 +648,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    // Copy data from internal FIFOs into the stream interface when possible
    rule rl_mm2s_fifof_deq ((rg_state == COPYING
                             || rg_state == WAIT_FOR_FINAL_DEQ)
+                          && state_outer == DMA_RUNNING_MM2S_COPY
                           && crg_dir[0] == MM2S
                           && axi4s_s_data_ugshim_slave.canPut
                           && rg_stream_out_count < rg_buf_len);
@@ -679,6 +696,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    // in the rule above was WAIT_FOR_FINAL_DEQ) and with aggressive
    // conditions the conflict was still present
    rule rl_mm2s_update_state (rg_state == WAIT_FOR_FINAL_DEQ
+                              && state_outer == DMA_RUNNING_MM2S_COPY
                               && crg_dir[0] == MM2S
                               && rg_stream_out_count >= rg_buf_len);
       $display ("DMA Copy Unit: finished stream transfer, going to IDLE");
@@ -694,6 +712,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    // for a burst read.
    rule rl_mm2s_refill_fifo (fifo_data.notFull
                             && rg_state == COPYING
+                            && state_outer == DMA_RUNNING_MM2S_COPY
                             && crg_dir[0] == MM2S
                             && rg_buf_cur < rg_buf_len // ie amt_buf_left > 0
                             && !rg_txion_in_flight
@@ -785,6 +804,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
 
    // handle read responses when copying in the MM2S direction
    rule rl_handle_read_rsp (rg_state == COPYING
+                           && state_outer == DMA_RUNNING_MM2S_COPY
                            && crg_dir[0] == MM2S
                            && ugshim_slave.r.canPeek
                            );
@@ -1183,6 +1203,8 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
          axi4s_s_meta_ugshim_slave.put (flit);
       end
    endmethod
+
+   method Bool s2mm_start_trigger = dw_s2mm_start_trigger;
 
    method Maybe #(DMA_Dir) end_trigger = rw_end_trigger.wget;
 
