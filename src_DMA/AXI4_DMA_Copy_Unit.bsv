@@ -43,6 +43,8 @@ interface AXI4_DMA_Copy_Unit_IFC #(numeric type id_
    interface AXI4Stream_Slave #(sid_, sdata_, sdest_, suser_) axi4s_data_slave;
    interface AXI4Stream_Slave #(sid_, sdata_, sdest_, suser_) axi4s_meta_slave;
 
+   (* always_ready *) method Bool stream_resetn_out;
+
    method Action trigger;
 
    // True when the stream has just started sending data, otherwise false
@@ -65,6 +67,7 @@ endinterface
 
 typedef enum {
    RESET,
+   RESET_HOLD_OUT, // hold the output resets stable for 30 cycles as suggested
    IDLE,
    HALTED,
    META_RECEIVE_S2MM,
@@ -99,6 +102,11 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
                                      );
 
    Reg #(Bit #(4)) rg_verbosity <- mkReg (0);
+
+   // Counts the number of cycles that the output reset signals have been active
+   Reg #(Bit #(TLog #(30))) rg_hold_out_ctr <- mkReg (0);
+   // The reset signal is ACTIVE LOW
+   Reg #(Bool) rg_resetn_out <- mkReg (True);
 
    let shim <- mkAXI4ShimFF;
    let ugshim_slave <- toUnguarded_AXI4_Slave (shim.slave);
@@ -287,7 +295,27 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
       rg_txion_counter <= 0;
       rg_bd_available <= False;
 
-      rg_state <= HALTED;
+      rg_hold_out_ctr <= 0;
+      rg_resetn_out <= False;
+
+      rg_state <= RESET_HOLD_OUT;
+   endrule
+
+   rule rl_reset_hold_out (rg_state == RESET_HOLD_OUT);
+      if (rg_verbosity > 0) begin
+         $display ("%m Copy Unit: rl_hold_out_ctr");
+      end
+      if (rg_verbosity > 1) begin
+         $display ("    rg_hold_out_ctr: ", fshow (rg_hold_out_ctr));
+      end
+      rg_hold_out_ctr <= rg_hold_out_ctr + 1;
+      if (rg_hold_out_ctr >= 30) begin
+         if (rg_verbosity > 0) begin
+            $display ("    reset done, going to HALTED");
+         end
+         rg_resetn_out <= True;
+         rg_state <= HALTED;
+      end
    endrule
 
    // The ethernet block will first send the metadata, and only will only
@@ -1169,6 +1197,8 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    interface axi4s_data_slave = axi4s_m_data_shim.slave;
    interface axi4s_meta_slave = axi4s_m_meta_shim.slave;
 
+   method Bool stream_resetn_out = rg_resetn_out;
+
    // Trigger a MM2S copy using the values currently in the v_v_rg_bd register bank
    method Action trigger if (rg_state == IDLE
                              && dma_int_reg.mm2s_dmasr.halted == 1'b0);
@@ -1224,7 +1254,7 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    endmethod
 
    method Bool reset_done;
-      return rg_state != RESET;
+      return rg_state != RESET && rg_state != RESET_HOLD_OUT;
    endmethod
 
    method Action halt_to_idle if (rg_state == HALTED);

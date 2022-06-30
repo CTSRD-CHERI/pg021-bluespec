@@ -67,6 +67,11 @@ interface AXI4_DMA_IFC #(numeric type mid_,  // master id
    interface AXI4Stream_Slave #(strm_id_, sdata_, sdest_, suser_) axi4s_data_slave;
    interface AXI4Stream_Slave #(strm_id_, sdata_, sdest_, suser_) axi4s_meta_slave;
 
+   // Reset signal for device connected on the other end of the stream interfaces
+   // Used to reset the device on the other end
+   // (See Xilinx pg138 ethernet subsystem "Resets" section)
+   (* always_ready *) method Bool stream_resetn_out;
+
    method Action set_verbosity (Bit #(4) new_verb);
    method Action reset;
 endinterface
@@ -86,6 +91,11 @@ interface AXI4_DMA_Sig_IFC;
    interface AXI4_Master_Sig #(Wd_MId_int, Wd_Addr, Wd_Data,
                                  Wd_AW_User, Wd_W_User, Wd_B_User,
                                  Wd_AR_User, Wd_R_User) axi_copy_master;
+
+   // Reset signal for device connected on the other end of the stream interfaces
+   // Used to reset the device on the other end
+   // (See Xilinx pg138 ethernet subsystem "Resets" section)
+   (* always_ready *) method Bool stream_resetn_out;
 
    // AXI4 Stream masters for writing data and metadata
    interface AXI4Stream_Master_Sig #(0, 32, 0, 0) axi4s_data_master;
@@ -123,6 +133,7 @@ module mkAXI4_DMA_Sig_Synth (AXI4_DMA_Sig_IFC);
       interface axi4s_meta_master = axi4s_meta_master_s;
       interface axi4s_data_slave  = axi4s_data_slave_s;
       interface axi4s_meta_slave  = axi4s_meta_slave_s;
+      method Bool stream_resetn_out = dma.stream_resetn_out;
       method Action reset = dma.reset;
       method set_verbosity = dma.set_verbosity;
    endinterface;
@@ -716,6 +727,8 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
    interface axi4s_data_slave = dma_copy_unit.axi4s_data_slave;
    interface axi4s_meta_slave = dma_copy_unit.axi4s_meta_slave;
 `endif
+
+   method Bool stream_resetn_out = dma_copy_unit.stream_resetn_out;
 
    method s2mm_interrupt_req = ( ( dma_int_reg.s2mm_dmasr.err_irq & dma_int_reg.s2mm_dmacr.err_irqen )
                                | ( dma_int_reg.s2mm_dmasr.dly_irq & dma_int_reg.s2mm_dmacr.dly_irqen )
