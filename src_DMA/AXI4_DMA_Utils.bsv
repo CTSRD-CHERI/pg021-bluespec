@@ -385,23 +385,23 @@ module mkAXI4Stream_Eth_Source (AXI4Stream_Eth_Source_IFC #(id_, data_, dest_, u
    Wire #(Bool) dw_rst <- mkDWire (False);
 
    Vector #(6, Bit #(32)) v_meta = newVector;
-   v_meta[0] = 'h00000000 v_meta[1] = 'h00000000 v_meta[2] = 'h00000000
-   v_meta[3] = 'h00000000 v_meta[4] = 'h00000000 v_meta[5] = 'h00000000
+   v_meta[0] = 'h00000000; v_meta[1] = 'h00000000; v_meta[2] = 'h00000000;
+   v_meta[3] = 'h00000000; v_meta[4] = 'h00000000; v_meta[5] = 'h00000000;
 
    Vector #(13, Bit #(32)) v_data = newVector;
-   v_data[0]  = 'h00000000
-   v_data[1]  = 'h00000000
-   v_data[2]  = 'h00000000
-   v_data[3]  = 'h00000000
-   v_data[4]  = 'h00000000
-   v_data[5]  = 'h00000000
-   v_data[6]  = 'h00000000
-   v_data[7]  = 'h00000000
-   v_data[8]  = 'h00000000
-   v_data[9]  = 'h00000000
-   v_data[10] = 'h00000000
-   v_data[11] = 'h00000000
-   v_data[12] = 'h00000000
+   v_data[0]  = 'h00000000;
+   v_data[1]  = 'h00000000;
+   v_data[2]  = 'h00000000;
+   v_data[3]  = 'h00000000;
+   v_data[4]  = 'h00000000;
+   v_data[5]  = 'h00000000;
+   v_data[6]  = 'h00000000;
+   v_data[7]  = 'h00000000;
+   v_data[8]  = 'h00000000;
+   v_data[9]  = 'h00000000;
+   v_data[10] = 'h00000000;
+   v_data[11] = 'h00000000;
+   v_data[12] = 'h00000000;
 
    let meta_shim <- mkAXI4StreamShimUGFF;
    let meta_s = meta_shim.slave;
