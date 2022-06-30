@@ -71,6 +71,7 @@ interface AXI4_DMA_Int_Reg_IFC;
 
    method Action set_verbosity (Bit #(4) new_verb);
    method Action reset;
+   method Bool reset_done;
 endinterface
 
 
@@ -348,6 +349,10 @@ module mkAXI4_DMA_Int_Reg (AXI4_DMA_Int_Reg_IFC);
 
    method Action reset if (rg_state != RESET);
       rg_state <= RESET;
+   endmethod
+
+   method Bool reset_done;
+      return rg_state != RESET;
    endmethod
 endmodule
 

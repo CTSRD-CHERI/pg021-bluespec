@@ -67,6 +67,7 @@ interface AXI4_DMA_Scatter_Gather_IFC#(numeric type id_,
    method Action set_verbosity (Bit #(4) new_verb);
 
    method Action reset;
+   method Bool reset_done;
 
    // Used to transition the Scatter Gather Unit from the Halted state
    // to the Idle state
@@ -887,6 +888,10 @@ module mkAXI4_DMA_Scatter_Gather
 
    method Action reset;
       rg_state <= DMA_RESET;
+   endmethod
+
+   method Bool reset_done;
+      return rg_state != DMA_RESET;
    endmethod
 
    method Action halt_to_idle if (rg_state == DMA_HALTED);

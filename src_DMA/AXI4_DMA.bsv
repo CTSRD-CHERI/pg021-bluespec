@@ -283,9 +283,13 @@ module mkAXI4_DMA (AXI4_DMA_IFC #(mid_, sid_, addr_, data_,
       fa_reset;
    endrule
 
-   rule rl_reset (rg_state == DMA_RESET);
+   rule rl_reset (rg_state == DMA_RESET
+                  && dma_reg.reset_done
+                  && axi_sg.reset_done
+                  && dma_copy_unit.reset_done
+                  && dma_int_reg.reset_done);
       if (rg_verbosity > 0) begin
-         $display ("AXI4 DMA Reset");
+         $display ("AXI4 DMA Reset finished");
       end
       rg_counter <= 0;
       rg_state <= DMA_HALTED;

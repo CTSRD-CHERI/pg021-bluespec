@@ -47,6 +47,7 @@ interface AXI4_DMA_Register_Module_IFC #(numeric type id_
 
    method Action set_verbosity (Bit #(4) new_verb);
    method Action reset;
+   method Bool reset_done;
 
    (* always_ready *)
    method Bool get_halt_to_idle;
@@ -498,6 +499,10 @@ module mkAXI4_DMA_Register_Module #(AXI4_DMA_Int_Reg_IFC dma_int_reg,
 
    method Action reset;
       rg_state <= RESET;
+   endmethod
+
+   method Bool reset_done;
+      return rg_state != RESET;
    endmethod
 
    method Bool get_halt_to_idle = pw_halt_to_idle;

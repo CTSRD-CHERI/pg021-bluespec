@@ -57,6 +57,7 @@ interface AXI4_DMA_Copy_Unit_IFC #(numeric type id_
    method Action set_verbosity (Bit #(4) new_verb);
 
    method Action reset;
+   method Bool reset_done;
    method Action halt_to_idle;
    interface Server #(Bit #(0), Bit #(0)) srv_halt;
    method Maybe #(DMA_Err_Cause) enq_halt_o;
@@ -1220,6 +1221,10 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
 
    method Action reset;
       rg_state <= RESET;
+   endmethod
+
+   method Bool reset_done;
+      return rg_state != RESET;
    endmethod
 
    method Action halt_to_idle if (rg_state == HALTED);
