@@ -294,11 +294,9 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
       rg_prev_arlen <= 0;
       rg_txion_counter <= 0;
       rg_bd_available <= False;
+      rg_resetn_out <= True;
 
-      rg_hold_out_ctr <= 0;
-      rg_resetn_out <= False;
-
-      rg_state <= RESET_HOLD_OUT;
+      rg_state <= HALTED;
    endrule
 
    rule rl_reset_hold_out (rg_state == RESET_HOLD_OUT);
@@ -311,10 +309,9 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
       rg_hold_out_ctr <= rg_hold_out_ctr + 1;
       if (rg_hold_out_ctr >= 30) begin
          if (rg_verbosity > 0) begin
-            $display ("    reset done, going to HALTED");
+            $display ("    reset signalling done, going to RESET");
          end
-         rg_resetn_out <= True;
-         rg_state <= HALTED;
+         rg_state <= RESET;
       end
    endrule
 
@@ -1250,7 +1247,9 @@ module mkAXI4_DMA_Copy_Unit #(Vector #(n_, Vector #(m_, Reg #(DMA_BD_TagWord))) 
    endmethod
 
    method Action reset;
-      rg_state <= RESET;
+      rg_hold_out_ctr <= 0;
+      rg_state <= RESET_HOLD_OUT;
+      rg_resetn_out <= False;
    endmethod
 
    method Bool reset_done;
